@@ -44,6 +44,16 @@ resource "docker_image" "ldap" {
   keep_locally = true
 }
 
+resource "local_file" "ldap_boostrap" {
+  content = templatefile("${abspath(path.module)}/entries/bootstrap.ldif", {
+      user_name     = local.user_name
+      user_password = local.user_password
+      domain_dn     = local.domain_dn
+      group_name    = local.group_name
+  })
+  filename = "${path.root}/.terraform/tmp/bootstrap.ldif"
+}
+
 resource "docker_container" "ldap" {
   image = docker_image.ldap.image_id
   name  = var.container_name
@@ -51,22 +61,25 @@ resource "docker_container" "ldap" {
     "LDAP_DOMAIN=${local.domain}",
     "LDAP_ADMIN_PASSWORD=${local.admin_password}",
   ]
+
+  # Seed entries via osixia's bootstrap LDIF mechanism. Files in this
+  # directory are applied automatically on the container's first start,
+  # before slapd is considered ready, so the entries are part of the
+  # initial database and cannot race with post-start ldapadd calls.
+  # volumes {
+  #   host_path      = abspath(local_file.ldap_boostrap.filename)
+  #   container_path = "/container/service/slapd/assets/config/bootstrap/ldif/custom/10-seed.ldif"
+  # }
   upload {
-    content = templatefile("${abspath(path.module)}/entries/user.ldif", {
+    content = templatefile("${abspath(path.module)}/entries/bootstrap.ldif", {
       user_name     = local.user_name
       user_password = local.user_password
+      group_name    = local.group_name
       domain_dn     = local.domain_dn
     })
-    file = "/tmp/ldap/user.ldif"
+    file = "/container/service/slapd/assets/config/bootstrap/ldif/custom/10-seed.ldif"
   }
-  upload {
-    content = templatefile("${abspath(path.module)}/entries/group.ldif", {
-      group_name = local.group_name
-      user_name  = local.user_name
-      domain_dn  = local.domain_dn
-    })
-    file = "/tmp/ldap/group.ldif"
-  }
+
   healthcheck {
     test = ["CMD", "ldapsearch", "-H", "ldap://localhost", "-b", "${local.domain_dn}", "-D", "${local.admin_dn}", "-w", "${local.admin_password}"]
   }
@@ -81,21 +94,67 @@ resource "docker_container" "ldap" {
   }
 }
 
-resource "enos_local_exec" "create_ldap_user" {
-  depends_on = [
-    docker_container.ldap
-  ]
+# resource "enos_local_exec" "create_ldap_user" {
+#   depends_on = [
+#     docker_container.ldap
+#   ]
 
-  inline = ["docker exec ${var.container_name} ldapadd -x -H ldap://localhost -D \"${local.admin_dn}\" -w ${local.admin_password} -f /tmp/ldap/user.ldif"]
-}
+#   inline = ["docker exec ${var.container_name} ldapadd -x -H ldap://localhost -D \"${local.admin_dn}\" -w ${local.admin_password} -f /tmp/ldap/user.ldif"]
+# }
 
-resource "enos_local_exec" "create_ldap_group" {
+# resource "enos_local_exec" "create_ldap_group" {
+#   depends_on = [
+#     docker_container.ldap,
+#     enos_local_exec.create_ldap_user,
+#   ]
+
+#   inline = ["docker exec ${var.container_name} ldapadd -x -H ldap://localhost -D \"${local.admin_dn}\" -w ${local.admin_password} -f /tmp/ldap/group.ldif"]
+# }
+
+# resource "enos_local_exec" "wait_for_user_entry" {
+#   depends_on = [
+#     enos_local_exec.create_ldap_user,
+#   ]
+
+#   inline = [
+#     # First verify the entry exists
+#     "timeout 20s bash -c 'until docker exec ${var.container_name} ldapsearch -x -H ldap://localhost -D \"${local.admin_dn}\" -w ${local.admin_password} -b \"${local.domain_dn}\" \"(cn=${local.user_name})\" | grep \"numEntries: 1\"; do sleep 2; done'",
+#     # Then verify we can bind as the user (authenticate)
+#     "timeout 20s bash -c 'until docker exec ${var.container_name} ldapwhoami -x -H ldap://localhost -D \"cn=${local.user_name},${local.domain_dn}\" -w ${local.user_password}; do sleep 2; done'"
+#   ]
+# }
+
+# resource "enos_local_exec" "wait_for_group_entry" {
+#   depends_on = [
+#     enos_local_exec.create_ldap_group,
+#   ]
+
+#   inline = [
+#     "timeout 20s bash -c 'until docker exec ${var.container_name} ldapsearch -x -H ldap://localhost -D \"${local.admin_dn}\" -w ${local.admin_password} -b \"${local.domain_dn}\" \"(cn=${local.group_name})\" | grep \"numEntries: 1\"; do sleep 2; done'"
+#   ]
+# }
+
+resource "enos_local_exec" "wait_for_user_entry" {
   depends_on = [
     docker_container.ldap,
-    enos_local_exec.create_ldap_user,
   ]
 
-  inline = ["docker exec ${var.container_name} ldapadd -x -H ldap://localhost -D \"${local.admin_dn}\" -w ${local.admin_password} -f /tmp/ldap/group.ldif"]
+  inline = [
+    # First verify the entry exists
+    "timeout 20s bash -c 'until docker exec ${var.container_name} ldapsearch -x -H ldap://localhost -D \"${local.admin_dn}\" -w ${local.admin_password} -b \"${local.domain_dn}\" \"(cn=${local.user_name})\" | grep \"numEntries: 1\"; do sleep 2; done'",
+    # Then verify we can bind as the user (authenticate)
+    "timeout 20s bash -c 'until docker exec ${var.container_name} ldapwhoami -x -H ldap://localhost -D \"cn=${local.user_name},${local.domain_dn}\" -w ${local.user_password}; do sleep 2; done'"
+  ]
+}
+
+resource "enos_local_exec" "wait_for_group_entry" {
+  depends_on = [
+    docker_container.ldap,
+  ]
+
+  inline = [
+    "timeout 20s bash -c 'until docker exec ${var.container_name} ldapsearch -x -H ldap://localhost -D \"${local.admin_dn}\" -w ${local.admin_password} -b \"${local.domain_dn}\" \"(cn=${local.group_name})\" | grep \"numEntries: 1\"; do sleep 2; done'"
+  ]
 }
 
 output "address" {

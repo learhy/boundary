@@ -5,3 +5,8 @@ sn: ${user_name}
 uid: ${user_name}
 mail: ${user_name}@mail.com
 userPassword: ${user_password}
+
+dn: cn=${group_name},${domain_dn}
+objectClass: groupOfUniqueNames
+cn: ${group_name}
+uniqueMember: cn=${user_name},${domain_dn}
