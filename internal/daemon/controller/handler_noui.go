@@ -13,7 +13,7 @@ import (
 
 func devUiPassthroughHandler(uiPassthroughDir string) http.Handler {
 	const op = "controller.devPassthroughHandler"
-	ctx := context.TODO()
+	ctx := context.Background()
 	// Panic may not be ideal but this is never a production call and it'll
 	// panic on startup. We could also just change the function to return
 	// an error.
