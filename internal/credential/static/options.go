@@ -19,6 +19,7 @@ type Option func(*options)
 type options struct {
 	withName                 string
 	withDescription          string
+	withDomain               string
 	withLimit                int
 	withPublicId             string
 	withPrivateKeyPassphrase []byte
@@ -32,6 +33,13 @@ func getDefaultOptions() options {
 func WithDescription(desc string) Option {
 	return func(o *options) {
 		o.withDescription = desc
+	}
+}
+
+// WithDomain provides an optional Active Directory domain.
+func WithDomain(domain string) Option {
+	return func(o *options) {
+		o.withDomain = domain
 	}
 }
 

@@ -185,6 +185,14 @@ type UsernamePasswordCredential struct {
 	// It must be set.
 	// @inject_tag: `gorm:"not_null"`
 	KeyId string `protobuf:"bytes,12,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty" gorm:"not_null"`
+	// domain is the Active Directory domain for this credential.
+	// For AD-joined targets, this is required. Stored in plaintext.
+	// @inject_tag: `gorm:"default:null"`
+	Domain string `protobuf:"bytes,13,opt,name=domain,proto3" json:"domain,omitempty" gorm:"default:null"`
+	// domain_hmac is a sha256-hmac of the domain. It is recalculated
+	// everytime the domain is updated.
+	// @inject_tag: `gorm:"not_null"`
+	DomainHmac []byte `protobuf:"bytes,14,opt,name=domain_hmac,json=domainHmac,proto3" json:"domain_hmac,omitempty" gorm:"not_null"`
 }
 
 func (x *UsernamePasswordCredential) Reset() {
@@ -301,6 +309,20 @@ func (x *UsernamePasswordCredential) GetKeyId() string {
 		return x.KeyId
 	}
 	return ""
+}
+
+func (x *UsernamePasswordCredential) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
+}
+
+func (x *UsernamePasswordCredential) GetDomainHmac() []byte {
+	if x != nil {
+		return x.DomainHmac
+	}
+	return nil
 }
 
 type SshPrivateKeyCredential struct {

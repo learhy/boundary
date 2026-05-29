@@ -344,8 +344,9 @@ func (r *Repository) LookupCredential(ctx context.Context, publicId string, _ ..
 // new UsernamePasswordCredential containing the updated values and a count of the
 // number of records updated. c is not changed.
 //
-// c must contain a valid PublicId. Only Name, Description, Username and Password can be
+// c must contain a valid PublicId. Only Name, Description, Username, Password and Domain can be
 // changed. If c.Name is set to a non-empty string, it must be unique within c.ProjectId.
+// Domain is stored in plaintext; only its HMAC is recalculated on update.
 //
 // An attribute of c will be set to NULL in the database if the attribute
 // in c is the zero value and it is included in fieldMaskPaths.
@@ -383,6 +384,7 @@ func (r *Repository) UpdateUsernamePasswordCredential(ctx context.Context,
 		case strings.EqualFold(descriptionField, f):
 		case strings.EqualFold(usernameField, f):
 		case strings.EqualFold(passwordField, f):
+		case strings.EqualFold(domainField, f):
 		default:
 			return nil, db.NoRowsAffected, errors.New(ctx, errors.InvalidFieldMask, op, f)
 		}
@@ -393,6 +395,7 @@ func (r *Repository) UpdateUsernamePasswordCredential(ctx context.Context,
 			descriptionField: c.Description,
 			usernameField:    c.Username,
 			passwordField:    c.Password,
+			domainField:      c.Domain,
 		},
 		fieldMaskPaths,
 		nil,
@@ -414,6 +417,19 @@ func (r *Repository) UpdateUsernamePasswordCredential(ctx context.Context,
 
 			// Set PasswordHmac and CtPassword masks for update.
 			dbMask = append(dbMask, "PasswordHmac", "CtPassword", "KeyId")
+		}
+		if strings.EqualFold(domainField, f) {
+			// Domain has been updated, recalculate hmac
+			databaseWrapper, err := r.kms.GetWrapper(ctx, projectId, kms.KeyPurposeDatabase)
+			if err != nil {
+				return nil, db.NoRowsAffected, errors.Wrap(ctx, err, op, errors.WithMsg("unable to get database wrapper"))
+			}
+			if err := c.hmacDomain(ctx, databaseWrapper); err != nil {
+				return nil, db.NoRowsAffected, errors.Wrap(ctx, err, op)
+			}
+
+			// Set DomainHmac mask for update.
+			dbMask = append(dbMask, "DomainHmac")
 		}
 	}
 

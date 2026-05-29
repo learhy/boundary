@@ -128,6 +128,8 @@ type UsernamePassword struct {
 	Username string `protobuf:"bytes,10,opt,name=username,proto3" json:"username,omitempty"` // @gotags: `class:"public"`
 	// The password of the credential
 	Password string `protobuf:"bytes,20,opt,name=password,proto3" json:"password,omitempty"` // @gotags: `class:"secret"`
+	// The Active Directory domain for this credential.
+	Domain string `protobuf:"bytes,30,opt,name=domain,proto3" json:"domain,omitempty"` // @gotags: `class:"public"`
 }
 
 func (x *UsernamePassword) Reset() {
@@ -172,6 +174,13 @@ func (x *UsernamePassword) GetUsername() string {
 func (x *UsernamePassword) GetPassword() string {
 	if x != nil {
 		return x.Password
+	}
+	return ""
+}
+
+func (x *UsernamePassword) GetDomain() string {
+	if x != nil {
+		return x.Domain
 	}
 	return ""
 }

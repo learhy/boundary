@@ -144,6 +144,10 @@ type UsernamePassword interface {
 	Credential
 	Username() string
 	Password() Password
+	// Domain returns the Active Directory domain for this credential.
+	// For AD-joined targets: "CORP" or "corp.example.com".
+	// For local accounts: "".
+	Domain() string
 }
 
 // SshPrivateKey is a credential containing a username an SSH private key and

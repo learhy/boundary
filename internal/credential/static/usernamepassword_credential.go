@@ -17,6 +17,8 @@ import (
 )
 
 var _ credential.Static = (*UsernamePasswordCredential)(nil)
+var _ credential.UsernamePassword = (*UsernamePasswordCredential)(nil)
+var _ credential.Credential = (*UsernamePasswordCredential)(nil)
 
 // A UsernamePasswordCredential contains the credential with a username and password.
 // It is owned by a credential store.
@@ -26,8 +28,8 @@ type UsernamePasswordCredential struct {
 }
 
 // NewUsernamePasswordCredential creates a new in memory static Credential containing a
-// username and password that is assigned to storeId. Name and description are the only
-// valid options. All other options are ignored.
+// username, password, and optional domain that is assigned to storeId.
+// Name, description, and domain are the only valid options. All other options are ignored.
 func NewUsernamePasswordCredential(
 	storeId string,
 	username string,
@@ -42,6 +44,7 @@ func NewUsernamePasswordCredential(
 			Description: opts.withDescription,
 			Username:    username,
 			Password:    []byte(password),
+			Domain:      opts.withDomain,
 		},
 	}
 	return l, nil
@@ -85,6 +88,54 @@ func (c *UsernamePasswordCredential) oplog(op oplog.OpType) oplog.Metadata {
 	return metadata
 }
 
+// Username returns the username for this credential.
+func (c *UsernamePasswordCredential) Username() string {
+	return c.UsernamePasswordCredential.Username
+}
+
+// Password returns the password for this credential.
+func (c *UsernamePasswordCredential) Password() credential.Password {
+	return credential.Password(c.Password)
+}
+
+// Domain returns the Active Directory domain for this credential.
+// For AD-joined targets: "CORP" or "corp.example.com".
+// For local accounts: "".
+func (c *UsernamePasswordCredential) Domain() string {
+	return c.UsernamePasswordCredential.Domain
+}
+
+// Secret returns the password as the secret data.
+func (c *UsernamePasswordCredential) Secret() credential.SecretData {
+	return c.Password()
+}
+
+func (c *UsernamePasswordCredential) hmacPassword(ctx context.Context, cipher wrapping.Wrapper) error {
+	const op = "static.(UsernamePasswordCredential).hmacPassword"
+	if cipher == nil {
+		return errors.New(ctx, errors.InvalidParameter, op, "missing cipher")
+	}
+	hm, err := crypto.HmacSha256(ctx, c.Password, cipher, []byte(c.StoreId), nil, crypto.WithEd25519())
+	if err != nil {
+		return errors.Wrap(ctx, err, op)
+	}
+	c.PasswordHmac = []byte(hm)
+	return nil
+}
+
+func (c *UsernamePasswordCredential) hmacDomain(ctx context.Context, cipher wrapping.Wrapper) error {
+	const op = "static.(UsernamePasswordCredential).hmacDomain"
+	if cipher == nil {
+		return errors.New(ctx, errors.InvalidParameter, op, "missing cipher")
+	}
+	hm, err := crypto.HmacSha256(ctx, []byte(c.Domain), cipher, []byte(c.StoreId), nil, crypto.WithEd25519())
+	if err != nil {
+		return errors.Wrap(ctx, err, op)
+	}
+	c.DomainHmac = []byte(hm)
+	return nil
+}
+
 func (c *UsernamePasswordCredential) encrypt(ctx context.Context, cipher wrapping.Wrapper) error {
 	const op = "static.(UsernamePasswordCredential).encrypt"
 	if len(c.Password) == 0 {
@@ -101,6 +152,9 @@ func (c *UsernamePasswordCredential) encrypt(ctx context.Context, cipher wrappin
 	if err := c.hmacPassword(ctx, cipher); err != nil {
 		return errors.Wrap(ctx, err, op)
 	}
+	if err := c.hmacDomain(ctx, cipher); err != nil {
+		return errors.Wrap(ctx, err, op)
+	}
 	return nil
 }
 
@@ -109,18 +163,5 @@ func (c *UsernamePasswordCredential) decrypt(ctx context.Context, cipher wrappin
 	if err := structwrapping.UnwrapStruct(ctx, cipher, c.UsernamePasswordCredential, nil); err != nil {
 		return errors.Wrap(ctx, err, op, errors.WithCode(errors.Decrypt))
 	}
-	return nil
-}
-
-func (c *UsernamePasswordCredential) hmacPassword(ctx context.Context, cipher wrapping.Wrapper) error {
-	const op = "static.(UsernamePasswordCredential).hmacPassword"
-	if cipher == nil {
-		return errors.New(ctx, errors.InvalidParameter, op, "missing cipher")
-	}
-	hm, err := crypto.HmacSha256(ctx, c.Password, cipher, []byte(c.StoreId), nil, crypto.WithEd25519())
-	if err != nil {
-		return errors.Wrap(ctx, err, op)
-	}
-	c.PasswordHmac = []byte(hm)
 	return nil
 }
