@@ -856,7 +856,14 @@ func (c *Command) handleExec(passthroughArgs []string) {
 		creds = pgCreds
 
 	case "rdp":
-		args = append(args, c.rdpFlags.buildArgs(c, port, ip, addr)...)
+		rdpEndpoint := c.sessionAuthzData.GetEndpoint()
+		rdpArgs, rdpCreds, rdpErr := c.rdpFlags.buildArgsWithEndpoint(c, port, ip, addr, rdpEndpoint, creds)
+		if rdpErr != nil {
+			argsErr = rdpErr
+			break
+		}
+		args = append(args, rdpArgs...)
+		creds = rdpCreds
 
 	case "ssh":
 		sshArgs, sshEnvs, sshCreds, sshErr := c.sshFlags.buildArgs(c, port, ip, addr, creds)
