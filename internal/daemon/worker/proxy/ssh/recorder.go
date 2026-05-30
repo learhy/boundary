@@ -5,7 +5,6 @@ package ssh
 
 import (
 	"context"
-	"io"
 	"sync"
 	"sync/atomic"
 	"time"

@@ -13,8 +13,7 @@ import (
 
 	"github.com/hashicorp/boundary/internal/bsr"
 	"github.com/hashicorp/boundary/internal/daemon/worker/proxy"
-	"github.com/hashicorp/boundary/internal/errors"
-	"github.com/golang/protobuf/proto"
+	boundaryErrors "github.com/hashicorp/boundary/internal/errors"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -34,11 +33,11 @@ func handleProxy(
 
 	switch {
 	case clientConn == nil:
-		return nil, errors.New(controlCtx, errors.InvalidParameter, op, "client connection is nil")
+		return nil, boundaryErrors.New(controlCtx, boundaryErrors.InvalidParameter, boundaryErrors.Op(op), "client connection is nil")
 	case pd == nil:
-		return nil, errors.New(controlCtx, errors.InvalidParameter, op, "proxy dialer is nil")
+		return nil, boundaryErrors.New(controlCtx, boundaryErrors.InvalidParameter, boundaryErrors.Op(op), "proxy dialer is nil")
 	case connId == "":
-		return nil, errors.New(controlCtx, errors.InvalidParameter, op, "connection id is empty")
+		return nil, boundaryErrors.New(controlCtx, boundaryErrors.InvalidParameter, boundaryErrors.Op(op), "connection id is empty")
 	}
 
 	// Get the SSH recording manager if recording is enabled.
@@ -54,7 +53,7 @@ func handleProxy(
 	// Open the target SSH connection.
 	targetConn, err := pd.Dial(controlCtx)
 	if err != nil {
-		return nil, errors.Wrap(controlCtx, op, err, errors.InvalidParameter, "failed to dial SSH target")
+		return nil, boundaryErrors.Wrap(controlCtx, err, boundaryErrors.Op(op))
 	}
 
 	// Determine the session ID from the connection ID.
@@ -70,18 +69,23 @@ func handleProxy(
 		if err != nil {
 			targetConn.Close()
 			clientConn.Close()
-			return nil, errors.Wrap(controlCtx, op, err, errors.InvalidParameter, "failed to create BSR connection recording")
+			return nil, boundaryErrors.Wrap(controlCtx, err, boundaryErrors.Op(op))
 		}
 
 		// Wire session metadata from protocolCtx if available.
 		// protocolCtx contains the controller-sent session context as a protobuf Any.
-		// Unmarshaling is a no-op if protocolCtx is nil or the wrong type.
+		// When the protocol context is nil (the common case for SSH before protocol
+		// context support lands), we create a minimal session meta with just the
+		// public ID. The full SessionMeta (User, Target, Worker) is wired later
+		// via SetSessionMeta when authorization data is received.
+		//
+		// TODO(ssh-recording): When an SSH-specific protocol context proto message
+		// is defined (e.g. SshProtocolContext), replace this block with proper
+		// json.Unmarshal or proto.Unmarshal depending on the wire format.
 		if protocolCtx != nil {
 			sessionMeta := &bsr.SessionMeta{PublicId: sessionId}
-			if err := proto.Unmarshal(protocolCtx.GetValue(), sessionMeta); err == nil {
-				if err := rec.SetSessionMeta(controlCtx, sessionId, sessionMeta); err != nil {
-					rec.logger.Warn("failed to set session meta", "session_id", sessionId, "error", err)
-				}
+			if err := rec.SetSessionMeta(controlCtx, sessionId, sessionMeta); err != nil {
+				rec.logger.Warn("failed to set session meta", "session_id", sessionId, "error", err)
 			}
 		}
 	}
@@ -111,8 +115,8 @@ func deriveSessionId(connId string) string {
 // It wraps a client↔target connection pair, intercepts SSH messages from the client
 // to emit BSR chunks, and performs bidirectional byte copy.
 type pipe struct {
-	clientConn  net.Conn // SSH client connection
-	targetConn  net.Conn // SSH target connection
+	clientConn   net.Conn // SSH client connection
+	targetConn   net.Conn // SSH target connection
 	connRecorder *ConnectionRecorder
 
 	// wg synchronizes the two copy goroutines.
@@ -233,6 +237,7 @@ func (p *pipe) plainCopy(src, dst net.Conn, direction string) {
 	_, err := io.CopyBuffer(dst, src, buf)
 	// EOF or read error is expected on connection close.
 	_ = direction // reserved for future debug logging
+	_ = err // suppress unused variable warning
 }
 
 // close closes both underlying connections exactly once.

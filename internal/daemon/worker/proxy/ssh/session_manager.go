@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/boundary/internal/bsr"
+	kms "github.com/hashicorp/boundary/internal/bsr/kms"
 	bsrssh "github.com/hashicorp/boundary/internal/bsr/ssh"
 	"github.com/hashicorp/boundary/internal/storage"
 	wrapping "github.com/hashicorp/go-kms-wrapping/v2"
@@ -33,7 +34,7 @@ import (
 //
 // State fields on bsrSession:
 //
-//   state        atomic.Value[bsrSessionState]
+//   state        atomic.Value  (stores bsrSessionState)
 //   openConns    atomic.Int32  (decremented on RemoveConnection)
 //   closeMu      sync.Mutex    (guards state transition to closing/closed)
 //   bsrSession   *bsr.Session  (non-nil once session is created)
@@ -88,7 +89,7 @@ type bsrSession struct {
 	startTime time.Time
 
 	// State machine fields.
-	state     atomic.Value[bsrSessionState]
+	state     atomic.Value // stores bsrSessionState
 	openConns atomic.Int32
 	closeMu   sync.Mutex
 }
@@ -102,11 +103,16 @@ func newBsrSession(id string) *bsrSession {
 	return s
 }
 
+func (s *bsrSession) loadState() bsrSessionState {
+	v, _ := s.state.Load().(bsrSessionState)
+	return v
+}
+
 // Transition to active state when the BSR session is created.
 func (s *bsrSession) activate(bsrSession *bsr.Session) {
 	s.closeMu.Lock()
 	defer s.closeMu.Unlock()
-	if s.state.Load() == sessionStateInitializing {
+	if s.loadState() == sessionStateInitializing {
 		s.bsr = bsrSession
 		s.state.Store(sessionStateActive)
 	}
@@ -116,7 +122,7 @@ func (s *bsrSession) activate(bsrSession *bsr.Session) {
 func (s *bsrSession) startClose() bool {
 	s.closeMu.Lock()
 	defer s.closeMu.Unlock()
-	if s.state.Load() != sessionStateActive {
+	if s.loadState() != sessionStateActive {
 		return false
 	}
 	s.state.Store(sessionStateClosing)
@@ -344,9 +350,9 @@ func (m *SshRecordingManager) createBsrSession(ctx context.Context, sessionId st
 	// satisfy bsr.NewSession validation. Use placeholder values; real metadata
 	// is set via SetSessionMeta.
 	bsrSessionMeta := &bsr.SessionMeta{
-		User:   &bsr.SessionUser{},
-		Target: &bsr.SessionTarget{},
-		Worker: &bsr.SessionWorker{},
+		User:   &bsr.User{},
+		Target: &bsr.Target{},
+		Worker: &bsr.Worker{},
 		StaticUsernamePasswordCredentials: []bsr.StaticUsernamePasswordCredential{
 			{PublicId: "_placeholder_"},
 		},
@@ -359,7 +365,7 @@ func (m *SshRecordingManager) createBsrSession(ctx context.Context, sessionId st
 	}
 
 	// Generate and wrap BSR keys.
-	keys, err := bsr.CreateKeys(ctx, m.wrapper, sessionId)
+	keys, err := kms.CreateKeys(ctx, m.wrapper, sessionId)
 	if err != nil {
 		return nil, fmt.Errorf("%s: failed to create BSR keys: %w", op, err)
 	}

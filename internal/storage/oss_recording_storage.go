@@ -140,7 +140,7 @@ func (c *ossContainer) Create(ctx context.Context, name string) (File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ossFile{file: f}, nil
+	return &ossFile{File: f}, nil
 }
 
 // OpenFile opens an existing file.
@@ -150,7 +150,7 @@ func (c *ossContainer) OpenFile(ctx context.Context, name string, opts ...Option
 	if err != nil {
 		return nil, err
 	}
-	return &ossFile{file: f}, nil
+	return &ossFile{File: f}, nil
 }
 
 // SubContainer creates or opens a sub-directory.
