@@ -235,10 +235,23 @@ func (c *Controller) InitNameIfEmpty(ctx context.Context) error {
 	return nil
 }
 
+// SshRateLimitConfig contains rate limiting settings for SSH session recording.
+type SshRateLimitConfig struct {
+	// MaxConcurrentSessions is the maximum number of concurrent SSH sessions
+	// allowed globally across all targets. A value of 0 means unlimited.
+	MaxConcurrentSessions int `hcl:"max_concurrent_sessions"`
+	// MaxPerTarget is the maximum number of concurrent SSH sessions allowed
+	// per unique target endpoint. A value of 0 means unlimited.
+	MaxPerTarget int `hcl:"max_per_target"`
+}
+
 type Worker struct {
 	Name        string `hcl:"name"`
 	Description string `hcl:"description"`
 	PublicAddr  string `hcl:"public_addr"`
+	// SshRateLimit contains rate limiting configuration for SSH session recording.
+	// When nil, rate limiting is disabled.
+	SshRateLimit *SshRateLimitConfig `hcl:"ssh_rate_limit"`
 
 	// We use a raw interface here so that we can take in a string
 	// value pointing to an env var or file. We then resolve that

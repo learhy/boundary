@@ -30,8 +30,8 @@ type InterceptingPipe struct {
 // Both connections are wrapped in InterceptingConn to record BSR DataChunks.
 func NewInterceptingPipe(clientConn, targetConn net.Conn, rec *ConnectionRecorder) *InterceptingPipe {
 	return &InterceptingPipe{
-		clientConn:  NewInterceptingConn(clientConn, bsr.DirectionFromClient, rec),
-		targetConn:  NewInterceptingConn(targetConn, bsr.DirectionFromTarget, rec),
+		clientConn:  NewInterceptingConn(clientConn, bsr.Inbound, rec),
+		targetConn:  NewInterceptingConn(targetConn, bsr.Outbound, rec),
 		pipeBufSize: 32 * 1024,
 	}
 }

@@ -7,41 +7,90 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
+	"path"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/boundary/internal/bsr"
-	"github.com/hashicorp/boundary/internal/daemon/worker"
+	"github.com/hashicorp/boundary/internal/storage"
 	pbs "github.com/hashicorp/boundary/internal/gen/controller/servers/services"
+	proxyHandlers "github.com/hashicorp/boundary/internal/daemon/worker/proxy"
 	"github.com/hashicorp/boundary/internal/observability/event"
 	wrapping "github.com/hashicorp/go-kms-wrapping/v2"
 	"github.com/hashicorp/go-kms-wrapping/v2/aead"
 	"github.com/mr-tron/base58"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // SshRecordingManager manages BSR sessions for SSH session recording.
 // It creates and stores BSR sessions keyed by Boundary session ID.
+// It supports graceful shutdown via shutdownCh and rate limiting via rl.
 type SshRecordingManager struct {
-	worker  *worker.Worker
-	storage recordingStorage
+	root string // recording storage root path
 
 	mu          sync.RWMutex
 	bsrSessions map[string]*bsr.Session // keyed by Boundary session ID
+
+	// shutdownCh is closed when the worker is shutting down.
+	// Used to abort in-progress operations gracefully.
+	shutdownCh <-chan struct{}
+	// isShutdown is set to true once the shutdown signal has been received.
+	isShutdown atomic.Bool
+	// rateLimiter enforces per-target and global concurrency limits.
+	rateLimiter *SshRateLimiter
 }
 
-// recordingStorage is the interface for BSR recording storage.
-type recordingStorage interface {
-	// NewBsrSessionStorage returns a new BSR session storage for the given session ID.
-	NewBsrSessionStorage(sessionId string) (bsr.SessionStorage, error)
-}
-
-// localFSRecordingStorage implements recordingStorage using a local filesystem.
-type localFSRecordingStorage struct {
+// bsrLocalFS implements storage.FS for BSR session recording.
+// It maps each BSR session recording to a single file under the root.
+type bsrLocalFS struct {
 	root string
 }
 
-func (s *localFSRecordingStorage) NewBsrSessionStorage(sessionId string) (bsr.SessionStorage, error) {
-	return bsr.NewLocalFS_sessionStorage(context.Background(), s.root, sessionId)
+// NewBsrLocalFS creates a storage.FS that stores BSR session files under root.
+func NewBsrLocalFS(root string) storage.FS {
+	return &bsrLocalFS{root: root}
+}
+
+func (fs *bsrLocalFS) New(ctx context.Context, name string) (storage.Container, error) {
+	filePath := path.Join(fs.root, name)
+	if err := os.MkdirAll(fs.root, 0755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return &bsrLocalContainer{file: f, path: filePath}, nil
+}
+
+func (fs *bsrLocalFS) Open(ctx context.Context, name string) (storage.Container, error) {
+	return nil, fmt.Errorf("bsrLocalFS.Open is not implemented for OSS SSH recording")
+}
+
+// bsrLocalContainer is a storage.Container backed by a single file.
+// BSR NewSession creates one of these per session recording.
+type bsrLocalContainer struct {
+	file *os.File
+	path string
+}
+
+func (c *bsrLocalContainer) Close() error {
+	return c.file.Close()
+}
+
+func (c *bsrLocalContainer) Create(ctx context.Context, name string) (storage.File, error) {
+	// BSR writes session metadata as a file inside the container.
+	// We treat the container itself as the session file, so no sub-files.
+	return nil, fmt.Errorf("bsrLocalContainer.Create: sub-file creation not supported")
+}
+
+func (c *bsrLocalContainer) OpenFile(ctx context.Context, name string, opts ...storage.Option) (storage.File, error) {
+	return nil, fmt.Errorf("bsrLocalContainer.OpenFile: not implemented")
+}
+
+func (c *bsrLocalContainer) SubContainer(ctx context.Context, name string, opts ...storage.Option) (storage.Container, error) {
+	return nil, fmt.Errorf("bsrLocalContainer.SubContainer: not implemented for single-file storage")
 }
 
 // sessionState holds per-session state in the SshRecordingManager.
@@ -52,18 +101,23 @@ type sessionState struct {
 
 // NewSshRecordingManager creates a new SSH recording manager.
 // The storage root path is used to store BSR session files.
-func NewSshRecordingManager(wrk *worker.Worker, root string) (*SshRecordingManager, error) {
-	if wrk == nil {
-		return nil, fmt.Errorf("worker is required")
-	}
+// shutdownCh is closed during worker shutdown; pass nil for testing.
+// cfg configures rate limiting; pass nil to disable.
+func NewSshRecordingManager(root string, shutdownCh <-chan struct{}, cfg *SshRateLimitConfig) (*SshRecordingManager, error) {
 	if root == "" {
 		return nil, fmt.Errorf("recording storage root is required")
 	}
 
+	var rl *SshRateLimiter
+	if cfg != nil {
+		rl = NewSshRateLimiter(cfg)
+	}
+
 	rm := &SshRecordingManager{
-		worker:      wrk,
-		storage:     &localFSRecordingStorage{root: root},
+		root:        root,
 		bsrSessions: make(map[string]*bsr.Session),
+		shutdownCh:  shutdownCh,
+		rateLimiter: rl,
 	}
 
 	return rm, nil
@@ -95,14 +149,20 @@ func (rm *SshRecordingManager) getOrCreateBsrSession(ctx context.Context, bounda
 		return nil, "", fmt.Errorf("failed to create BSR wrapper: %w", err)
 	}
 
-	// Create session storage
-	storage, err := rm.storage.NewBsrSessionStorage(recordingId)
+	// Create BSR session recording metadata
+	recMeta := &bsr.SessionRecordingMeta{
+		Id:       recordingId,
+		Protocol: bsr.Protocol("ssh"),
+	}
+
+	// Create BSR storage filesystem
+	fs := NewBsrLocalFS(rm.root)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create BSR storage: %w", err)
 	}
 
 	// Create BSR session
-	bsrSession, err := bsr.NewSession(ctx, sessionMeta, storage, wrapper)
+	bsrSession, err := bsr.NewSession(ctx, recMeta, sessionMeta, fs, wrapper)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create BSR session: %w", err)
 	}
@@ -329,9 +389,20 @@ func (rm *SshRecordingManager) SessionsManaged(ctx context.Context) ([]string, e
 	return ids, nil
 }
 
-// Shutdown calls Close.
+// Shutdown signals the manager to stop accepting new sessions and releases resources.
+// It sets the isShutdown flag and closes all active BSR sessions.
 func (rm *SshRecordingManager) Shutdown(ctx context.Context) {
+	if rm.isShutdown.Load() {
+		return
+	}
+	rm.isShutdown.Store(true)
 	rm.Close(ctx)
+}
+
+// SetShutdown records that shutdown has been triggered without closing sessions.
+// Used during worker shutdown to prevent new session creation.
+func (rm *SshRecordingManager) SetShutdown() {
+	rm.isShutdown.Store(true)
 }
 
 // GetRecordingManager returns the underlying RecordingManager (self for SshRecordingManager).

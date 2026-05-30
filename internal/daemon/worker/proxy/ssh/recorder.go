@@ -12,6 +12,7 @@ import (
 
 	"github.com/hashicorp/boundary/internal/bsr"
 	"github.com/hashicorp/boundary/internal/bsr/ssh"
+	proxyHandlers "github.com/hashicorp/boundary/internal/daemon/worker/proxy"
 )
 
 // Compression is the compression type for BSR chunk encoding.
@@ -24,7 +25,7 @@ const (
 
 // writerState holds the writer and encoder for a given direction.
 type writerState struct {
-	writer *bsr.MessagesWriter
+	writer io.WriteCloser
 	enc    *bsr.ChunkEncoder
 }
 
@@ -47,14 +48,18 @@ func NewConnectionRecorder(ctx context.Context, bsrConn *bsr.Connection, compres
 	}
 
 	// Create writers for both directions
-	for _, dir := range []bsr.Direction{bsr.DirectionFromClient, bsr.DirectionFromTarget} {
+	for _, dir := range []bsr.Direction{bsr.Inbound, bsr.Outbound} {
 		w, err := bsrConn.NewMessagesWriter(ctx, dir)
 		if err != nil {
 			cr.Close(ctx)
 			return nil, fmt.Errorf("failed to create messages writer for %s: %w", dir, err)
 		}
 
-		enc := bsr.NewChunkEncoder(w, bsr.CompressionType(compress))
+		enc, err := bsr.NewChunkEncoder(ctx, w, bsr.Compression(compress), bsr.NoEncryption)
+		if err != nil {
+			cr.Close(ctx)
+			return nil, fmt.Errorf("failed to create chunk encoder: %w", err)
+		}
 		cr.msgWriters[dir] = &writerState{
 			writer: w,
 			enc:    enc,
@@ -140,20 +145,28 @@ func NewChannelRecorder(ctx context.Context, bsrCh *bsr.Channel, compress Compre
 	}
 
 	// Create data writers for both directions
-	for _, dir := range []bsr.Direction{bsr.DirectionFromClient, bsr.DirectionFromTarget} {
+	for _, dir := range []bsr.Direction{bsr.Inbound, bsr.Outbound} {
 		w, err := bsrCh.NewMessagesWriter(ctx, dir)
 		if err != nil {
 			cr.Close(ctx)
 			return nil, fmt.Errorf("failed to create messages writer for %s: %w", dir, err)
 		}
-		enc := bsr.NewChunkEncoder(w, bsr.CompressionType(compress))
+		enc, err := bsr.NewChunkEncoder(ctx, w, bsr.Compression(compress), bsr.NoEncryption)
+		if err != nil {
+			cr.Close(ctx)
+			return nil, fmt.Errorf("failed to create data chunk encoder: %w", err)
+		}
 		cr.dataWriters[dir] = &writerState{
 			writer: w,
 			enc:    enc,
 		}
 
 		// Create separate request writer
-		reqEnc := bsr.NewChunkEncoder(w, bsr.CompressionType(compress))
+		reqEnc, err := bsr.NewChunkEncoder(ctx, w, bsr.Compression(compress), bsr.NoEncryption)
+		if err != nil {
+			cr.Close(ctx)
+			return nil, fmt.Errorf("failed to create request chunk encoder: %w", err)
+		}
 		cr.reqWriters[dir] = reqEnc
 	}
 

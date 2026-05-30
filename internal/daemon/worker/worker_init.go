@@ -42,7 +42,7 @@ func ossRecorderManagerFactory(w *Worker) (recorderManager, error) {
 		return nil, nil
 	}
 
-	sshRm, err := ssh.NewSshRecordingManager(w, w.conf.RawConfig.Worker.RecordingStoragePath)
+	sshRm, err := ssh.NewSshRecordingManager(w.conf.RawConfig.Worker.RecordingStoragePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSH recording manager: %w", err)
 	}
