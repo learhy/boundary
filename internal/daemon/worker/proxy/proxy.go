@@ -28,8 +28,65 @@ var (
 	// GetHandler returns the handler registered for the provided worker and
 	// protocolContext. If a protocol cannot be determined or the protocol is
 	// not registered nil, ErrUnknownProtocol is returned.
-	GetHandler = tcpOnly
+	GetHandler = typeUrlDispatcher
 )
+
+// typeUrlToHandler maps full type URL suffixes (package.MessageName) to handler keys.
+// This is consulted before the generic handlers map so protocol-specific handlers
+// take precedence over the TCP fallback.
+var typeUrlToHandler = map[string]string{
+	// controller.storage.v1.BucketContext is the protocol context sent by the
+	// controller for all session connections. When the target has a storage
+	// bucket configured (including for session recording), the controller sends
+	// this context and the worker uses it to resolve the correct handler.
+	// Handlers register themselves here by calling RegisterHandlerForTypeUrl.
+	//
+	// Protocol-specific contexts (e.g. SshProtocolContext for SSH targets with
+	// session recording) should also be registered here by their respective
+	// handler packages so that typeUrlDispatcher can route correctly.
+}
+
+// RegisterHandlerForTypeUrl registers a handler key for a specific type URL suffix.
+// It is called by protocol-specific packages in their init() to associate their
+// proto message type with the handler key they registered via RegisterHandler.
+func RegisterHandlerForTypeUrl(typeUrlSuffix, handlerKey string) {
+	typeUrlToHandler[typeUrlSuffix] = handlerKey
+}
+
+// typeUrlDispatcher resolves protocol handlers by examining the type URL of
+// the protocol context. It first looks up the type URL suffix in typeUrlToHandler
+// to find a registered handler key; if found, it returns that handler. If no
+// match is found, it falls back to the TCP handler for backwards compatibility
+// with pre-session-recording deployments.
+func typeUrlDispatcher(_ string, protocolCtx proto.Message) (Handler, error) {
+	if protocolCtx == nil {
+		// No protocol context: fall back to TCP (legacy behaviour)
+		return getTcpHandler()
+	}
+
+	typeUrl := protocolCtx.ProtoReflect().Descriptor().FullName()
+	key, ok := typeUrlToHandler[string(typeUrl)]
+	if ok {
+		handler, ok := handlers.Load(key)
+		if !ok {
+			// Handler key registered but handler not yet loaded (init order)
+			return nil, ErrUnknownProtocol
+		}
+		return handler.(Handler), nil
+	}
+
+	// No type-url match: fall back to TCP for backwards compatibility
+	return getTcpHandler()
+}
+
+// getTcpHandler is a helper that returns the registered TCP handler.
+func getTcpHandler() (Handler, error) {
+	handler, ok := handlers.Load(TcpHandlerName)
+	if !ok {
+		return nil, ErrUnknownProtocol
+	}
+	return handler.(Handler), nil
+}
 
 // RecordingManager allows a handler for a protocol that supports recording.
 type RecordingManager any
@@ -56,11 +113,4 @@ func RegisterHandler(protocol string, handler Handler) error {
 	return nil
 }
 
-// tcpOnly returns only the TCP protocol.
-func tcpOnly(string, proto.Message) (Handler, error) {
-	handler, ok := handlers.Load(TcpHandlerName)
-	if !ok {
-		return nil, ErrUnknownProtocol
-	}
-	return handler.(Handler), nil
-}
+
