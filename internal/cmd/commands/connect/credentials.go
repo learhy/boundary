@@ -53,6 +53,10 @@ func (c credentials) unconsumedSessionCredentials() []*targets.SessionCredential
 	return out
 }
 
+// usernamePasswordConsumed returns true if the underlying session credential
+// was marked as consumed (so it won't be printed to the user).
+func (c usernamePassword) usernamePasswordConsumed() bool { return c.consumed }
+
 func parseCredentials(creds []*targets.SessionCredential) (credentials, error) {
 	if creds == nil {
 		return credentials{}, nil

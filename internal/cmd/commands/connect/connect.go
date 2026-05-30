@@ -111,6 +111,25 @@ type Command struct {
 	cleanupFuncs []func() error
 }
 
+// getSessionAuthzData implements rdpCommandProvider so that *Command can be passed
+// to rdpFlags.buildArgsWithEndpoint without exporting internal state.
+func (c *Command) getSessionAuthzData() *sessionAuthzData {
+	if c.sessionAuthzData == nil {
+		return nil
+	}
+	return &sessionAuthzData{
+		endpoint: c.sessionAuthzData.GetEndpoint(),
+		typ:      c.sessionAuthzData.GetType(),
+		hostId:   c.sessionAuthzData.GetHostId(),
+		targetId: c.sessionAuthzData.GetTargetId(),
+	}
+}
+
+// getCleanupFuncs implements rdpCommandProvider.
+func (c *Command) getCleanupFuncs() *[]func() error {
+	return &c.cleanupFuncs
+}
+
 func (c *Command) Synopsis() string {
 	switch c.Func {
 	case "connect":
@@ -856,7 +875,14 @@ func (c *Command) handleExec(passthroughArgs []string) {
 		creds = pgCreds
 
 	case "rdp":
-		args = append(args, c.rdpFlags.buildArgs(c, port, ip, addr)...)
+		rdpArgs, rdpCreds, rdpErr := c.rdpFlags.buildArgs(c, port, ip, addr, creds)
+		if rdpErr != nil {
+			c.PrintCliError(fmt.Errorf("Error building RDP args: %w", rdpErr))
+			c.execCmdReturnValue.Store(int32(3))
+			return
+		}
+		args = append(args, rdpArgs...)
+		creds = rdpCreds
 
 	case "ssh":
 		sshArgs, sshEnvs, sshCreds, sshErr := c.sshFlags.buildArgs(c, port, ip, addr, creds)
