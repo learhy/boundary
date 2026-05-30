@@ -104,8 +104,31 @@ func (p *InterceptingPipe) Close() {
 	})
 }
 
-// InterceptingConn wraps a net.Conn and emits BSR DataChunks for all
-// data read from or written to the underlying connection.
+// runWithShutdown runs fn in a goroutine while monitoring doneCh.
+// If doneCh is closed, fn is aborted via context cancel and the function returns context.Canceled.
+// If fn completes first, returns its error.
+// The doneCh parameter may be nil (no shutdown signal to check).
+func runWithShutdown(ctx context.Context, doneCh <-chan struct{}, fn func() error) error {
+	if doneCh == nil {
+		return fn()
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- fn()
+		close(errCh)
+	}()
+
+	select {
+	case <-doneCh:
+		// Shutdown signalled — context cancellation will propagate to fn
+		return context.Canceled
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 type InterceptingConn struct {
 	net.Conn
 	dir  bsr.Direction

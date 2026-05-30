@@ -5,6 +5,7 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -17,6 +18,25 @@ import (
 	wrapping "github.com/hashicorp/go-kms-wrapping/v2"
 	"google.golang.org/protobuf/types/known/anypb"
 )
+
+// contextKeyDoneCh is the key used to store the done channel in context.
+type contextKeyDoneCh struct{}
+
+// WithDoneChannel stores a done channel in the context.
+// The channel is closed when the connection handler should stop.
+func WithDoneChannel(ctx context.Context, doneCh <-chan struct{}) context.Context {
+	return context.WithValue(ctx, contextKeyDoneCh{}, doneCh)
+}
+
+// doneChannelFromContext retrieves the done channel stored in the context.
+// Returns nil if not set.
+func doneChannelFromContext(ctx context.Context) <-chan struct{} {
+	v := ctx.Value(contextKeyDoneCh{})
+	if v == nil {
+		return nil
+	}
+	return v.(<-chan struct{})
+}
 
 // handleProxy is the SSH proxy handler entry point.
 // It returns a ProxyConnFn that runs the bidirectional SSH proxy with recording.
@@ -105,8 +125,43 @@ func handleProxy(
 	// Create the intercepting pipe
 	pipe := NewInterceptingPipe(clientConn, targetConn, connRecorder)
 
+	// Rate limit acquire with backoff retry
+	if sshRm.rateLimiter != nil {
+		if err := rateLimitAcquire(dataCtx, sshRm.rateLimiter, endpoint); err != nil {
+			event.WriteError(controlCtx, op, err, event.WithInfo("conn_id", connId))
+			connRecorder.Close(dataCtx)
+			targetConn.Close()
+			return func() {}, fmt.Errorf("rate limit acquire failed: %w", err)
+		}
+	}
+
+	// Extract done channel from context (set by worker handler)
+	doneCh := doneChannelFromContext(dataCtx)
+
 	return func() {
+		// Check done channel before starting proxy
+		if doneCh != nil {
+			select {
+			case <-doneCh:
+				// Shutdown in progress — skip proxy, clean up
+				if sshRm.rateLimiter != nil {
+					sshRm.rateLimiter.Release(endpoint)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				connRecorder.Close(ctx)
+				targetConn.Close()
+				clientConn.Close()
+				return
+			default:
+			}
+		}
+
+		// Run the actual proxy
 		defer func() {
+			if sshRm.rateLimiter != nil {
+				sshRm.rateLimiter.Release(endpoint)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			connRecorder.Close(ctx)
@@ -114,10 +169,53 @@ func handleProxy(
 			clientConn.Close()
 		}()
 
-		if err := pipe.Run(dataCtx); err != nil {
+		if err := runWithShutdown(dataCtx, doneCh, func() error {
+			return pipe.Run(dataCtx)
+		}); err != nil {
 			event.WriteError(dataCtx, op+"(proxy)", err, event.WithInfo("conn_id", connId))
 		}
 	}, nil
+}
+
+// rateLimitAcquire attempts to acquire a rate limit token for the given target
+// with exponential backoff retry up to maxRetries.
+// Uses the session context deadline as the overall timeout.
+func rateLimitAcquire(ctx context.Context, rl *SshRateLimiter, target string) error {
+	const op = "ssh.rateLimitAcquire"
+	backoff := 10 * time.Millisecond
+	maxBackoff := 500 * time.Millisecond
+	maxRetries := 20
+
+	for i := 0; i < maxRetries; i++ {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s: context expired while waiting for rate limit: %w", op, ctx.Err())
+		default:
+		}
+
+		err := rl.Acquire(ctx, target)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrRateLimited) {
+			return fmt.Errorf("%s: %w", op, err)
+		}
+
+		// Wait with backoff
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s: context expired while waiting for rate limit: %w", op, ctx.Err())
+		case <-time.After(backoff):
+		}
+
+		// Exponential backoff, capped
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+
+	return fmt.Errorf("%s: exceeded max retries", op)
 }
 
 // extractSshRecordingManager extracts the *SshRecordingManager from the recording manager.

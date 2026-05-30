@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/boundary/internal/daemon/common"
 	"github.com/hashicorp/boundary/internal/daemon/worker/internal/metric"
 	proxyHandlers "github.com/hashicorp/boundary/internal/daemon/worker/proxy"
+	ssh "github.com/hashicorp/boundary/internal/daemon/worker/proxy/ssh"
 	"github.com/hashicorp/boundary/internal/daemon/worker/session"
 	"github.com/hashicorp/boundary/internal/errors"
 	pbs "github.com/hashicorp/boundary/internal/gen/controller/servers/services"
@@ -289,15 +290,25 @@ func (w *Worker) handleProxy(listenerCfg *listenerutil.ListenerConfig, sessionMa
 			event.WriteError(ctx, op, err)
 			return
 		}
+
+		// Create a done channel to signal graceful shutdown to the SSH handler.
+		// It is closed when the websocket connection handler returns (see defer below).
+		doneCh := make(chan struct{})
+		defer close(doneCh)
+
 		decryptFn, err := w.credDecryptFn(ctx)
 		if err != nil {
 			conn.Close(proxyHandlers.WebsocketStatusProtocolSetupError, "error getting decryption function")
-			event.WriteError(ctx, op, err)
+			return
 		}
-		runProxy, err := handleProxyFn(ctx, proxyHandlers.WithSession(ctx, sess), decryptFn, cc, pDialer, acResp.GetConnectionId(), protocolCtx, w.recorderManager)
+
+		// Build the session context with the done channel for graceful shutdown support.
+		sessionCtx := proxyHandlers.WithSession(ctx, sess)
+		sessionCtx = ssh.WithDoneChannel(sessionCtx, doneCh)
+
+		runProxy, err := handleProxyFn(ctx, sessionCtx, decryptFn, cc, pDialer, acResp.GetConnectionId(), protocolCtx, w.recorderManager)
 		if err != nil {
 			conn.Close(proxyHandlers.WebsocketStatusProtocolSetupError, "unable to setup proxying")
-			event.WriteError(ctx, op, err)
 			return
 		}
 
