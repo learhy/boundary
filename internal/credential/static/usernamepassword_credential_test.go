@@ -172,7 +172,7 @@ func TestUsernamePasswordCredential_New(t *testing.T) {
 			got2.CtPassword = nil
 
 			// encrypt also calculates the hmac, validate it is correct
-			hm, err := crypto.HmacSha256(ctx, got.Password, databaseWrapper, []byte(got.StoreId), nil, crypto.WithEd25519())
+			hm, err := crypto.HmacSha256(ctx, got.UsernamePasswordCredential.Password, databaseWrapper, []byte(got.StoreId), nil, crypto.WithEd25519())
 			require.NoError(err)
 			tt.want.PasswordHmac = []byte(hm)
 

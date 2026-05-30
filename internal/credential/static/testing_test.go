@@ -63,12 +63,12 @@ func Test_TestUsernamePasswordCredential(t *testing.T) {
 	assert.Equal(cred.Name, "my-name")
 	assert.Equal(cred.Description, "my-description")
 	assert.Equal(cred.Username, "user")
-	assert.Equal(cred.Password, []byte("pass"))
+	assert.Equal(cred.UsernamePasswordCredential.Password, []byte("pass"))
 
 	// Validate hmac
 	databaseWrapper, err := kkms.GetWrapper(context.Background(), prj.PublicId, kms.KeyPurposeDatabase)
 	require.NoError(err)
-	hm, err := crypto.HmacSha256(context.Background(), cred.Password, databaseWrapper, []byte(cred.StoreId), nil, crypto.WithEd25519())
+	hm, err := crypto.HmacSha256(context.Background(), cred.UsernamePasswordCredential.Password, databaseWrapper, []byte(cred.StoreId), nil, crypto.WithEd25519())
 	require.NoError(err)
 	assert.Equal([]byte(hm), cred.PasswordHmac)
 }

@@ -130,8 +130,8 @@ func TestRepository_CreateUsernamePasswordCredential(t *testing.T) {
 			}
 			require.NoError(err)
 			assertPublicId(t, globals.UsernamePasswordCredentialPrefix, got.PublicId)
-			assert.Equal(tt.cred.Username, got.Username)
-			assert.Nil(got.Password)
+			assert.Equal(tt.cred.Username(), got.Username())
+			assert.Nil(got.UsernamePasswordCredential.Password)
 			assert.Nil(got.CtPassword)
 
 			// Validate password
@@ -142,14 +142,14 @@ func TestRepository_CreateUsernamePasswordCredential(t *testing.T) {
 			databaseWrapper, err := kkms.GetWrapper(context.Background(), tt.projectId, kms.KeyPurposeDatabase)
 			require.NoError(err)
 			require.NoError(lookupCred.decrypt(ctx, databaseWrapper))
-			assert.Equal(tt.cred.Password, lookupCred.Password)
+			assert.Equal(tt.cred.UsernamePasswordCredential.Password, lookupCred.UsernamePasswordCredential.Password)
 
-			assert.Empty(got.Password)
+			assert.Empty(got.UsernamePasswordCredential.Password)
 			assert.Empty(got.CtPassword)
 			assert.NotEmpty(got.PasswordHmac)
 
 			// Validate hmac
-			hm, err := crypto.HmacSha256(ctx, tt.cred.Password, databaseWrapper, []byte(tt.cred.StoreId), nil, crypto.WithEd25519())
+			hm, err := crypto.HmacSha256(ctx, tt.cred.UsernamePasswordCredential.Password, databaseWrapper, []byte(tt.cred.StoreId), nil, crypto.WithEd25519())
 			require.NoError(err)
 			assert.Equal([]byte(hm), got.PasswordHmac)
 
@@ -644,7 +644,7 @@ func TestRepository_LookupCredential(t *testing.T) {
 			require.NotNil(got)
 			switch v := got.(type) {
 			case *UsernamePasswordCredential:
-				assert.Empty(v.Password)
+				assert.Empty(v.UsernamePasswordCredential.Password)
 				assert.Empty(v.CtPassword)
 				assert.NotEmpty(v.PasswordHmac)
 			case *SshPrivateKeyCredential:
@@ -744,7 +744,7 @@ func TestRepository_ListCredentials(t *testing.T) {
 			for _, c := range got {
 				switch v := c.(type) {
 				case *UsernamePasswordCredential:
-					assert.Empty(v.Password)
+					assert.Empty(v.UsernamePasswordCredential.Password)
 					assert.Empty(v.CtPassword)
 					assert.NotEmpty(v.PasswordHmac)
 				case *SshPrivateKeyCredential:
@@ -888,14 +888,14 @@ func TestRepository_UpdateUsernamePasswordCredential(t *testing.T) {
 
 	changeUser := func(n string) func(credential *UsernamePasswordCredential) *UsernamePasswordCredential {
 		return func(c *UsernamePasswordCredential) *UsernamePasswordCredential {
-			c.Username = n
+			c.UsernamePasswordCredential.Username = n
 			return c
 		}
 	}
 
 	changePassword := func(d string) func(*UsernamePasswordCredential) *UsernamePasswordCredential {
 		return func(c *UsernamePasswordCredential) *UsernamePasswordCredential {
-			c.Password = []byte(d)
+			c.UsernamePasswordCredential.Password = []byte(d)
 			return c
 		}
 	}
@@ -1335,7 +1335,7 @@ func TestRepository_UpdateUsernamePasswordCredential(t *testing.T) {
 			// Validate hmac
 			databaseWrapper, err := kkms.GetWrapper(context.Background(), prj.GetPublicId(), kms.KeyPurposeDatabase)
 			require.NoError(err)
-			hm, err := crypto.HmacSha256(ctx, tt.want.Password, databaseWrapper, []byte(store.GetPublicId()), nil, crypto.WithEd25519())
+			hm, err := crypto.HmacSha256(ctx, tt.want.UsernamePasswordCredential.Password, databaseWrapper, []byte(store.GetPublicId()), nil, crypto.WithEd25519())
 			require.NoError(err)
 			assert.Equal([]byte(hm), got.PasswordHmac)
 
@@ -1371,7 +1371,7 @@ func TestRepository_UpdatePasswordCredentialKeyUpdate(t *testing.T) {
 	err = kkms.RotateKeys(ctx, prj.GetPublicId())
 	require.NoError(err)
 
-	orig.Password = []byte("pass1") // Company policy to change password every 3 months
+	orig.UsernamePasswordCredential.Password = []byte("pass1") // Company policy to change password every 3 months
 
 	got, _, err := repo.UpdateUsernamePasswordCredential(ctx, prj.GetPublicId(), orig, orig.GetVersion(), []string{"Password"})
 	require.NoError(err)
@@ -1382,7 +1382,7 @@ func TestRepository_UpdatePasswordCredentialKeyUpdate(t *testing.T) {
 	// Validate hmac
 	databaseWrapper, err := kkms.GetWrapper(context.Background(), prj.GetPublicId(), kms.KeyPurposeDatabase, kms.WithKeyId(got.KeyId))
 	require.NoError(err)
-	hm, err := crypto.HmacSha256(ctx, orig.Password, databaseWrapper, []byte(credStore.GetPublicId()), nil, crypto.WithEd25519())
+	hm, err := crypto.HmacSha256(ctx, orig.UsernamePasswordCredential.Password, databaseWrapper, []byte(credStore.GetPublicId()), nil, crypto.WithEd25519())
 	require.NoError(err)
 	assert.Equal([]byte(hm), got.PasswordHmac)
 }
