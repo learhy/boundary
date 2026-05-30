@@ -281,6 +281,11 @@ type Worker struct {
 	// they are sync'ed to the corresponding storage bucket. The path must already exist.
 	RecordingStoragePath string `hcl:"recording_storage_path"`
 
+	// SshRateLimit configures rate limiting for SSH sessions. When nil, rate limiting
+	// is disabled. When set, it applies a global concurrent session cap and a per-target
+	// connection cap to prevent resource exhaustion from misconfigured clients.
+	SshRateLimit *SshRateLimitConfig `hcl:"ssh_rate_limit,block"`
+
 	// ControllerGeneratedActivationToken is a controller-generated activation
 	// token used to register this worker to the cluster. It can be a path, env
 	// var, or direct value.
@@ -334,6 +339,14 @@ type Reporting struct {
 
 type License struct {
 	Enabled bool `hcl:"enabled"`
+}
+
+// SshRateLimitConfig configures rate limiting for SSH sessions.
+// MaxConcurrentSessions is the global cap (0 = unlimited).
+// MaxPerTarget is the per-target cap (0 = unlimited).
+type SshRateLimitConfig struct {
+	MaxConcurrentSessions int `hcl:"max_concurrent_sessions,optional"`
+	MaxPerTarget          int `hcl:"max_per_target,optional"`
 }
 
 // DevWorker is a Config that is used for dev mode of Boundary
