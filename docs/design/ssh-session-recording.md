@@ -421,7 +421,7 @@ func init() {
         if w.RecordingStorage == nil {
             return nil, errors.New("worker has no recording storage")
         }
-        return NewSshRecordingManager(w, w.RecordingStorage, w.Logger().Named("ssh-recording"))
+        return ssh.NewSshRecordingManager(storagePath, wrapper, w.RecordingStorage, w.Logger().Named("ssh-recording"))
     }
 }
 ```

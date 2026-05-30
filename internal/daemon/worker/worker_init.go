@@ -45,5 +45,7 @@ func ossRecorderManagerFactory(w *Worker) (recorderManager, error) {
 	if w.recorderManager != nil {
 		return w.recorderManager, nil // already initialized
 	}
-	return ssh.NewSshRecordingManager(w, w.RecordingStorage, w.Logger().Named("ssh-recording")), nil
+	storagePath := w.Conf().RawConfig.Worker.RecordingStoragePath
+	wrapper := w.Conf().WorkerAuthStorageKms
+	return ssh.NewSshRecordingManager(storagePath, wrapper, w.RecordingStorage, w.Logger().Named("ssh-recording")), nil
 }

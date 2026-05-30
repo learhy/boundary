@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/boundary/internal/bsr"
 	"github.com/hashicorp/boundary/internal/daemon/worker/proxy"
 	"github.com/hashicorp/boundary/internal/errors"
+	"github.com/golang/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -77,7 +78,7 @@ func handleProxy(
 		// Unmarshaling is a no-op if protocolCtx is nil or the wrong type.
 		if protocolCtx != nil {
 			sessionMeta := &bsr.SessionMeta{PublicId: sessionId}
-			if err := protocolCtx.UnmarshalTo(sessionMeta); err == nil {
+			if err := proto.Unmarshal(protocolCtx.GetValue(), sessionMeta); err == nil {
 				if err := rec.SetSessionMeta(controlCtx, sessionId, sessionMeta); err != nil {
 					rec.logger.Warn("failed to set session meta", "session_id", sessionId, "error", err)
 				}

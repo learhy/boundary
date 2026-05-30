@@ -13,7 +13,6 @@ import (
 
 	"github.com/hashicorp/boundary/internal/bsr"
 	bsrssh "github.com/hashicorp/boundary/internal/bsr/ssh"
-	"github.com/hashicorp/boundary/internal/daemon/worker"
 	"github.com/hashicorp/boundary/internal/storage"
 	wrapping "github.com/hashicorp/go-kms-wrapping/v2"
 	"github.com/hashicorp/go-hclog"
@@ -45,7 +44,6 @@ import (
 // - Session map access is protected by sessionsMu
 // - Connection map access is protected by connsMu
 type SshRecordingManager struct {
-	worker       *worker.Worker
 	logger       hclog.Logger
 	storage      storage.RecordingStorage
 	storagePath  string
@@ -145,13 +143,14 @@ type connInfo struct {
 }
 
 // NewSshRecordingManager creates a new SSH recording manager.
-func NewSshRecordingManager(w *worker.Worker, storage storage.RecordingStorage, logger hclog.Logger) *SshRecordingManager {
+// storagePath is the worker configured path for BSR recordings.
+// wrapper is the Worker's KMS wrapper (WorkerAuthStorageKms) used to wrap BSR keys.
+func NewSshRecordingManager(storagePath string, wrapper wrapping.Wrapper, storage storage.RecordingStorage, logger hclog.Logger) *SshRecordingManager {
 	return &SshRecordingManager{
-		worker:      w,
 		logger:      logger,
 		storage:     storage,
-		storagePath: w.Conf().RawConfig.Worker.RecordingStoragePath,
-		wrapper:     w.Conf().WorkerAuthStorageKms,
+		storagePath: storagePath,
+		wrapper:     wrapper,
 	}
 }
 
