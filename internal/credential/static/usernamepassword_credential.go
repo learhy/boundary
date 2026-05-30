@@ -95,7 +95,7 @@ func (c *UsernamePasswordCredential) Username() string {
 
 // Password returns the password for this credential.
 func (c *UsernamePasswordCredential) Password() credential.Password {
-	return credential.Password(c.Password)
+	return credential.Password(c.UsernamePasswordCredential.Password)
 }
 
 // Domain returns the Active Directory domain for this credential.
@@ -115,7 +115,7 @@ func (c *UsernamePasswordCredential) hmacPassword(ctx context.Context, cipher wr
 	if cipher == nil {
 		return errors.New(ctx, errors.InvalidParameter, op, "missing cipher")
 	}
-	hm, err := crypto.HmacSha256(ctx, c.Password, cipher, []byte(c.StoreId), nil, crypto.WithEd25519())
+	hm, err := crypto.HmacSha256(ctx, c.UsernamePasswordCredential.Password, cipher, []byte(c.StoreId), nil, crypto.WithEd25519())
 	if err != nil {
 		return errors.Wrap(ctx, err, op)
 	}
@@ -128,7 +128,7 @@ func (c *UsernamePasswordCredential) hmacDomain(ctx context.Context, cipher wrap
 	if cipher == nil {
 		return errors.New(ctx, errors.InvalidParameter, op, "missing cipher")
 	}
-	hm, err := crypto.HmacSha256(ctx, []byte(c.Domain), cipher, []byte(c.StoreId), nil, crypto.WithEd25519())
+	hm, err := crypto.HmacSha256(ctx, []byte(c.UsernamePasswordCredential.Domain), cipher, []byte(c.StoreId), nil, crypto.WithEd25519())
 	if err != nil {
 		return errors.Wrap(ctx, err, op)
 	}
@@ -138,7 +138,7 @@ func (c *UsernamePasswordCredential) hmacDomain(ctx context.Context, cipher wrap
 
 func (c *UsernamePasswordCredential) encrypt(ctx context.Context, cipher wrapping.Wrapper) error {
 	const op = "static.(UsernamePasswordCredential).encrypt"
-	if len(c.Password) == 0 {
+	if len(c.UsernamePasswordCredential.Password) == 0 {
 		return errors.New(ctx, errors.InvalidParameter, op, "no password defined")
 	}
 	if err := structwrapping.WrapStruct(ctx, cipher, c.UsernamePasswordCredential, nil); err != nil {

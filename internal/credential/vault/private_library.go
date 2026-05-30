@@ -70,10 +70,12 @@ type usrPassCred struct {
 	*baseCred
 	username string
 	password credential.Password
+	domain   string
 }
 
 func (c *usrPassCred) Username() string              { return c.username }
 func (c *usrPassCred) Password() credential.Password { return c.password }
+func (c *usrPassCred) Domain() string                { return c.domain }
 
 func baseToUsrPass(ctx context.Context, bc *baseCred) (*usrPassCred, error) {
 	switch {
