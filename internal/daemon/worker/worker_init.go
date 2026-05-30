@@ -6,6 +6,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/hashicorp/boundary/internal/daemon/worker/proxy/ssh"
 	"github.com/hashicorp/boundary/internal/storage"
@@ -45,7 +46,31 @@ func ossRecorderManagerFactory(w *Worker) (recorderManager, error) {
 	if w.recorderManager != nil {
 		return w.recorderManager, nil // already initialized
 	}
-	storagePath := w.Conf().RawConfig.Worker.RecordingStoragePath
-	wrapper := w.Conf().WorkerAuthStorageKms
-	return ssh.NewSshRecordingManager(storagePath, wrapper, w.RecordingStorage, w.Logger().Named("ssh-recording")), nil
+	storagePath := w.conf.RawConfig.Worker.RecordingStoragePath
+	wrapper := w.conf.WorkerAuthStorageKms
+
+	// Extract rate limit config from worker configuration.
+	// If nil, rate limiting is disabled in the manager.
+	var sshRateLimit *ssh.SshRateLimitConfig
+	if rl := w.conf.RawConfig.Worker.SshRateLimit; rl != nil {
+		sshRateLimit = &ssh.SshRateLimitConfig{
+			MaxConcurrentSessions: rl.MaxConcurrentSessions,
+			MaxPerTarget:          rl.MaxPerTarget,
+		}
+	}
+
+	mgr := ssh.NewSshRecordingManager(storagePath, wrapper, w.RecordingStorage, sshRateLimit, w.logger.Named("ssh-recording"))
+
+	// Run recovery scan synchronously before returning the manager.
+	// This ensures orphaned session directories are quarantined before
+	// new sessions can be created with the same session IDs.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if n, err := ssh.ScanAndRecoverOrphanedSessions(ctx, storagePath, w.logger.Named("ssh-recovery")); err != nil {
+		w.logger.Warn("orphaned session scan failed, continuing", "error", err)
+	} else if n > 0 {
+		w.logger.Info("orphaned session scan complete", "orphaned_count", n)
+	}
+
+	return mgr, nil
 }

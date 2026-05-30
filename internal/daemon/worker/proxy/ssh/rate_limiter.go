@@ -95,8 +95,11 @@ func (r *rateLimiter) Acquire(ctx context.Context, targetId string) bool {
 }
 
 // Release releases the slot acquired by Acquire for the given targetId.
-// Safe to call even if Acquire returned false.
+// Safe to call even if Acquire returned false. Safe to call on nil limiter.
 func (r *rateLimiter) Release(targetId string) {
+	if r == nil {
+		return
+	}
 	if r.maxGlobal > 0 {
 		r.global.Add(-1)
 	}
@@ -112,7 +115,11 @@ func (r *rateLimiter) Release(targetId string) {
 }
 
 // Count returns the current global active session count.
+// Safe to call on nil limiter.
 func (r *rateLimiter) Count() int {
+	if r == nil {
+		return 0
+	}
 	return int(r.global.Load())
 }
 
