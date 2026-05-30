@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/hashicorp/boundary/internal/daemon/worker/session"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -30,6 +31,26 @@ var (
 	// not registered nil, ErrUnknownProtocol is returned.
 	GetHandler = tcpOnly
 )
+
+// sessionContextKey is the type used as a context key to store the session.Session
+// for use by proxy handlers (e.g., SSH recording handler) that need access to
+// session credentials and metadata.
+type sessionContextKey struct{}
+
+// WithSession stores the session in the context for retrieval by proxy handlers.
+func WithSession(ctx context.Context, sess session.Session) context.Context {
+	return context.WithValue(ctx, sessionContextKey{}, sess)
+}
+
+// SessionFromContext retrieves the session.Session from the context.
+func SessionFromContext(ctx context.Context) session.Session {
+	if v := ctx.Value(sessionContextKey{}); v != nil {
+		if sess, ok := v.(session.Session); ok {
+			return sess
+		}
+	}
+	return nil
+}
 
 // RecordingManager allows a handler for a protocol that supports recording.
 type RecordingManager any
