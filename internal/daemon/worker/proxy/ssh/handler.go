@@ -50,17 +50,28 @@ func handleProxy(
 		}
 	}
 
+	// Determine the session ID and target ID for rate limiting.
+	sessionId := deriveSessionId(connId)
+	// Target ID is not available at this point — use session ID as proxy key.
+	// The rate limiter uses "_unidentified_" for empty target IDs as a catch-all
+	// bucket to cap unidentified connection storms.
+	targetId := sessionId
+
+	// Check rate limits before opening the target connection.
+	if rec != nil {
+		if !rec.RateLimitAcquire(controlCtx, targetId) {
+			return nil, boundaryErrors.New(controlCtx, boundaryErrors.RetryLimitExceeded, boundaryErrors.Op(op), "ssh session rate limit exceeded")
+		}
+	}
+
 	// Open the target SSH connection.
 	targetConn, err := pd.Dial(controlCtx)
 	if err != nil {
+		if rec != nil {
+			rec.RateLimitRelease(targetId)
+		}
 		return nil, boundaryErrors.Wrap(controlCtx, err, boundaryErrors.Op(op))
 	}
-
-	// Determine the session ID from the connection ID.
-	// Connection IDs have the form "cr_<uuid>", session ID is embedded in the
-	// session lookup done by the worker before calling this handler.
-	// We derive it from the connection ID prefix: s_<uuid> from cr_<uuid>.
-	sessionId := deriveSessionId(connId)
 
 	// Set up recording if enabled.
 	var connRecorder *ConnectionRecorder
@@ -69,6 +80,7 @@ func handleProxy(
 		if err != nil {
 			targetConn.Close()
 			clientConn.Close()
+			rec.RateLimitRelease(targetId)
 			return nil, boundaryErrors.Wrap(controlCtx, err, boundaryErrors.Op(op))
 		}
 
@@ -93,9 +105,21 @@ func handleProxy(
 	// Build the intercepting pipe.
 	pipe := newPipe(clientConn, targetConn, connRecorder)
 
+	// Get the shutdown channel from the recording manager.
+	var doneCh <-chan struct{}
+	if rec != nil {
+		doneCh = rec.ShutdownCh()
+	}
+
 	// Return the ProxyConnFn that runs the bidirectional copy loop.
+	// Rate limit release is deferred to pipe.close() — safe because closeOnce
+	// guarantees the release happens exactly once per connection.
 	return func() {
-		pipe.run(controlCtx)
+		pipe.runWithShutdown(controlCtx, doneCh, func() {
+			if rec != nil {
+				rec.RateLimitRelease(targetId)
+			}
+		})
 	}, nil
 }
 
@@ -126,6 +150,7 @@ type pipe struct {
 	closeOnce sync.Once
 }
 
+// newPipe creates a new pipe for bidirectional SSH connection copying.
 func newPipe(clientConn, targetConn net.Conn, connRecorder *ConnectionRecorder) *pipe {
 	return &pipe{
 		clientConn:   clientConn,
@@ -134,24 +159,41 @@ func newPipe(clientConn, targetConn net.Conn, connRecorder *ConnectionRecorder) 
 	}
 }
 
-// run executes bidirectional copy. SSH messages from the client are intercepted
-// via InterceptingConn.Read and emitted as BSR chunks. Plain byte data (STDIN)
-// is copied transparently via PlainCopy.
-// The function blocks until both directions complete or an error occurs.
-func (p *pipe) run(ctx context.Context) {
+// run executes bidirectional copy with graceful shutdown support.
+// If done is non-nil, the function checks it before starting copies and each
+// goroutine checks it on every iteration to enable prompt exit on SIGTERM.
+// onClose is called exactly once after the copy loop finishes (before p.close()).
+func (p *pipe) runWithShutdown(ctx context.Context, done <-chan struct{}, onClose func()) {
+	// Check graceful shutdown signal before starting.
+	if done != nil {
+		select {
+		case <-done:
+			p.close()
+			if onClose != nil {
+				onClose()
+			}
+			return
+		default:
+		}
+	}
+
 	if p.connRecorder != nil {
 		p.wg.Add(2)
-		go p.copyClientToTarget(ctx)
-		go p.copyTargetToClient(ctx)
+		go p.copyClientToTargetWithShutdown(ctx, done)
+		go p.copyTargetToClientWithShutdown(ctx, done)
 		p.wg.Wait()
 	} else {
 		// No recording: plain bidirectional copy.
 		p.wg.Add(2)
-		go p.plainCopy(p.clientConn, p.targetConn, "client→target")
-		go p.plainCopy(p.targetConn, p.clientConn, "target→client")
+		go p.plainCopyWithShutdown(p.clientConn, p.targetConn, "client→target", done)
+		go p.plainCopyWithShutdown(p.targetConn, p.clientConn, "target→client", done)
 		p.wg.Wait()
 	}
+
 	p.close()
+	if onClose != nil {
+		onClose()
+	}
 }
 
 // copyClientToTarget reads SSH messages from the client, emits BSR chunks,
@@ -172,6 +214,44 @@ func (p *pipe) copyClientToTarget(ctx context.Context) {
 			return
 		default:
 		}
+
+		n, err := ic.Read(buf)
+		if n > 0 {
+			_, writeErr := p.targetConn.Write(buf[:n])
+			if writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, errSSHDataCopy) {
+				return
+			}
+			return
+		}
+	}
+}
+
+// copyClientToTargetWithShutdown is like copyClientToTarget but checks the
+// done channel on every iteration for faster graceful shutdown response.
+func (p *pipe) copyClientToTargetWithShutdown(ctx context.Context, done <-chan struct{}) {
+	defer p.wg.Done()
+
+	ic := newInterceptingConn(p.clientConn, p.connRecorder, bsr.Outbound)
+
+	buf := copyBufPool.Get().([]byte)
+	defer copyBufPool.Put(buf)
+
+	iterCount := 0
+	for {
+		// Check graceful shutdown every 100 iterations (balance responsiveness vs overhead).
+		if done != nil && iterCount%100 == 0 {
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
+		iterCount++
 
 		n, err := ic.Read(buf)
 		if n > 0 {
@@ -222,6 +302,43 @@ func (p *pipe) copyTargetToClient(ctx context.Context) {
 	}
 }
 
+// copyTargetToClientWithShutdown is like copyTargetToClient but checks the
+// done channel on every iteration for faster graceful shutdown response.
+func (p *pipe) copyTargetToClientWithShutdown(ctx context.Context, done <-chan struct{}) {
+	defer p.wg.Done()
+
+	ic := newInterceptingConn(p.targetConn, p.connRecorder, bsr.Inbound)
+
+	buf := copyBufPool.Get().([]byte)
+	defer copyBufPool.Put(buf)
+
+	iterCount := 0
+	for {
+		if done != nil && iterCount%100 == 0 {
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
+		iterCount++
+
+		n, err := ic.Read(buf)
+		if n > 0 {
+			_, writeErr := p.clientConn.Write(buf[:n])
+			if writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, errSSHDataCopy) {
+				return
+			}
+			return
+		}
+	}
+}
+
 // errSSHDataCopy is used internally to signal that a plain data copy completed
 // without producing a parsed SSH message (e.g., channel data).
 var errSSHDataCopy = errors.New("ssh: plain data copy, no message parsed")
@@ -238,6 +355,40 @@ func (p *pipe) plainCopy(src, dst net.Conn, direction string) {
 	// EOF or read error is expected on connection close.
 	_ = direction // reserved for future debug logging
 	_ = err // suppress unused variable warning
+}
+
+// plainCopyWithShutdown is like plainCopy but checks the done channel on each
+// iteration for faster graceful shutdown response.
+func (p *pipe) plainCopyWithShutdown(src, dst net.Conn, direction string, done <-chan struct{}) {
+	defer p.wg.Done()
+
+	buf := copyBufPool.Get().([]byte)
+	defer copyBufPool.Put(buf)
+
+	iterCount := 0
+	for {
+		// Check done every 100 iterations.
+		if done != nil && iterCount%100 == 0 {
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
+		iterCount++
+
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			_, werr := dst.Write(buf[:n])
+			if werr != nil {
+				return
+			}
+		}
+		if rerr != nil {
+			// EOF or read error is expected on connection close.
+			return
+		}
+	}
 }
 
 // close closes both underlying connections exactly once.

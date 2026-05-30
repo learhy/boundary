@@ -55,6 +55,15 @@ type SshRecordingManager struct {
 
 	connsMu sync.RWMutex
 	conns   sync.Map // connId → *connInfo
+
+	// Rate limiting (nil when disabled).
+	rateLimiter *rateLimiter
+
+	// Graceful shutdown signaling. Closed by Shutdown() to interrupt in-flight pipes.
+	// Initialized once in NewSshRecordingManager; never reused after first close.
+	shutdownCh   chan struct{}
+	shutdownMu   sync.Mutex
+	isShutdown   bool
 }
 
 type bsrSessionState int
@@ -151,12 +160,15 @@ type connInfo struct {
 // NewSshRecordingManager creates a new SSH recording manager.
 // storagePath is the worker configured path for BSR recordings.
 // wrapper is the Worker's KMS wrapper (WorkerAuthStorageKms) used to wrap BSR keys.
-func NewSshRecordingManager(storagePath string, wrapper wrapping.Wrapper, storage storage.RecordingStorage, logger hclog.Logger) *SshRecordingManager {
+// cfg configures rate limiting; pass nil to disable.
+func NewSshRecordingManager(storagePath string, wrapper wrapping.Wrapper, storage storage.RecordingStorage, cfg *SshRateLimitConfig, logger hclog.Logger) *SshRecordingManager {
 	return &SshRecordingManager{
 		logger:      logger,
 		storage:     storage,
 		storagePath: storagePath,
 		wrapper:     wrapper,
+		rateLimiter: newRateLimiter(cfg),
+		shutdownCh:  make(chan struct{}),
 	}
 }
 
@@ -179,13 +191,53 @@ func (m *SshRecordingManager) SessionsManaged(ctx context.Context) ([]string, er
 }
 
 // Shutdown closes all open BSR sessions and flushes pending data.
+// It also closes the shutdown channel to interrupt any in-flight pipe copy loops.
 func (m *SshRecordingManager) Shutdown(ctx context.Context) {
+	m.shutdownMu.Lock()
+	if m.isShutdown {
+		m.shutdownMu.Unlock()
+		return
+	}
+	m.isShutdown = true
+	close(m.shutdownCh)
+	m.shutdownMu.Unlock()
+
 	m.logger.Info("shutting down SSH recording manager")
 	m.sessions.Range(func(key, val any) bool {
 		s := val.(*bsrSession)
 		m.finalizeSession(ctx, s.id, "worker_shutdown", "")
 		return true
 	})
+}
+
+// ShutdownCh returns the shutdown signal channel. Pipes should select on this
+// channel to detect graceful shutdown and exit promptly.
+func (m *SshRecordingManager) ShutdownCh() <-chan struct{} {
+	return m.shutdownCh
+}
+
+// CheckRateLimit returns an error if the session would exceed rate limits for targetId.
+func (m *SshRecordingManager) CheckRateLimit(ctx context.Context, targetId string) error {
+	if m.rateLimiter == nil {
+		return nil
+	}
+	return m.rateLimiter.CheckRateLimit(targetId)
+}
+
+// RateLimitAcquire attempts to acquire a rate limit slot for the given targetId.
+// Returns true if acquired; caller must call RateLimitRelease when session ends.
+func (m *SshRecordingManager) RateLimitAcquire(ctx context.Context, targetId string) bool {
+	if m.rateLimiter == nil {
+		return true
+	}
+	return m.rateLimiter.Acquire(ctx, targetId)
+}
+
+// RateLimitRelease releases the rate limit slot for the given targetId.
+func (m *SshRecordingManager) RateLimitRelease(targetId string) {
+	if m.rateLimiter != nil {
+		m.rateLimiter.Release(targetId)
+	}
 }
 
 // SSH-specific methods (beyond recorderManager interface).
