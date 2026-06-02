@@ -143,9 +143,19 @@ func (c *ossContainer) Create(ctx context.Context, name string) (File, error) {
 	return &ossFile{File: f}, nil
 }
 
-// OpenFile opens an existing file.
+// OpenFile opens an existing file. When WithCreateFile is passed, the file is
+// created if it does not yet exist (matching the documented semantics of
+// storage.OpenFile used by the BSR code path).
 func (c *ossContainer) OpenFile(ctx context.Context, name string, opts ...Option) (File, error) {
 	path := filepath.Join(c.path, name)
+	o := GetOpts(opts...)
+	if o.WithCreateFile {
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		return &ossFile{File: f}, nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
