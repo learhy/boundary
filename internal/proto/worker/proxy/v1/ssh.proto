@@ -1,0 +1,41 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
+syntax = "proto3";
+
+package worker.proxy.v1;
+
+import "controller/servers/services/v1/credential.proto";
+
+option go_package = "github.com/hashicorp/boundary/internal/proxy;proxy";
+
+enum HostKeyCheckStrategy {
+  HOST_KEY_CHECK_STRATEGY_UNSPECIFIED = 0;
+  // Verify the target's host key against the session's GetHostKeys() PKCS#8 blobs.
+  // Reject connection if the target's host key does not match any known key.
+  HOST_KEY_CHECK_STRATEGY_KNOWN_HOST_KEYS = 1;
+  // Accept any host key without verification. Use for development only.
+  HOST_KEY_CHECK_STRATEGY_INSECURE_ACCEPT_ANY = 2;
+}
+
+enum CredentialStrategy {
+  CREDENTIAL_STRATEGY_UNSPECIFIED = 0;
+  // Try each credential in order until one succeeds.
+  CREDENTIAL_STRATEGY_TRY_EACH = 1;
+  // Use the first credential only; fail if it does not authenticate.
+  CREDENTIAL_STRATEGY_PICK_FIRST = 2;
+}
+
+// SshProtocolContext is the ProtocolContext payload for SSH target connections.
+// It is marshaled into google.protobuf.Any with type URL:
+//   type.googleapis.com/worker.proxy.v1.SshProtocolContext
+message SshProtocolContext {
+  // Credentials to use for authentication. Decrypted by the worker before use.
+  repeated controller.servers.services.v1.Credential credentials = 1;
+
+  // Strategy for selecting which credential to use when multiple are present.
+  CredentialStrategy credential_strategy = 2;
+
+  // Strategy for verifying the target's SSH host key.
+  HostKeyCheckStrategy host_key_check_strategy = 3;
+}

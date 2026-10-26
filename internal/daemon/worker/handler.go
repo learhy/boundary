@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -69,8 +70,11 @@ func (w *Worker) handleProxy(listenerCfg *listenerutil.ListenerConfig, sessionMa
 	if listenerCfg == nil {
 		return nil, fmt.Errorf("%s: missing listener config", op)
 	}
+	fmt.Fprintf(os.Stderr, "[DEBUG-SERVER] handleProxy handler created\n")
 	return func(wr http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		fmt.Fprintf(os.Stderr, "[DEBUG-REQ] handleProxy HTTP request: url=%s method=%s\n", r.URL.Path, r.Method)
+		os.Stderr.Sync()
 		if r.TLS == nil {
 			event.WriteError(ctx, op, stderrors.New("no request tls information found"))
 			wr.WriteHeader(http.StatusInternalServerError)
@@ -117,6 +121,7 @@ func (w *Worker) handleProxy(listenerCfg *listenerutil.ListenerConfig, sessionMa
 		}
 
 		sess := sessionManager.Get(sessionId)
+		fmt.Fprintf(os.Stderr, "[DEBUG-REQ] sess=%v\n", sess != nil)
 		if sess == nil {
 			event.WriteError(ctx, op, stderrors.New("session not found locally"), event.WithInfo("session_id", sessionId))
 			wr.WriteHeader(http.StatusInternalServerError)
@@ -127,6 +132,7 @@ func (w *Worker) handleProxy(listenerCfg *listenerutil.ListenerConfig, sessionMa
 			Subprotocols: []string{globals.TcpProxyV1},
 		}
 		conn, err := websocket.Accept(wr, r, opts)
+		fmt.Fprintf(os.Stderr, "[DEBUG-REQ] websocket.Accept err=%v\n", err)
 		if err != nil {
 			event.WriteError(ctx, op, err, event.WithInfoMsg("error during websocket upgrade"))
 			wr.WriteHeader(http.StatusInternalServerError)
@@ -139,13 +145,16 @@ func (w *Worker) handleProxy(listenerCfg *listenerutil.ListenerConfig, sessionMa
 		defer connCancel()
 
 		var handshake proxy.ClientHandshake
+		fmt.Fprintf(os.Stderr, "[DEBUG-REQ] reading handshake\n")
 		if err := wspb.Read(connCtx, conn, &handshake); err != nil {
+			fmt.Fprintf(os.Stderr, "[DEBUG-REQ] handshake read err=%v\n", err)
 			event.WriteError(ctx, op, err, event.WithInfoMsg("error reading handshake from client"))
 			if err = conn.Close(websocket.StatusPolicyViolation, "invalid handshake received"); err != nil {
 				event.WriteError(ctx, op, err, event.WithInfoMsg("error closing client connection"))
 			}
 			return
 		}
+		fmt.Fprintf(os.Stderr, "[DEBUG-REQ] handshake command=%v tofu-len=%d\n", handshake.Command, len(handshake.GetTofuToken()))
 		if len(handshake.GetTofuToken()) < 20 {
 			event.WriteError(ctx, op, stderrors.New("invalid tofu token"))
 			if err = conn.Close(websocket.StatusUnsupportedData, "invalid tofu token"); err != nil {
@@ -206,10 +215,11 @@ func (w *Worker) handleProxy(listenerCfg *listenerutil.ListenerConfig, sessionMa
 		}
 		workerId := w.LastStatusSuccess().WorkerId
 
-		var acResp *pbs.AuthorizeConnectionResponse
-		var connsLeft int32
-		acResp, connsLeft, err = sess.RequestAuthorizeConnection(ctx, workerId, connCancel)
-		if err != nil {
+	var acResp *pbs.AuthorizeConnectionResponse
+	var connsLeft int32
+	acResp, connsLeft, err = sess.RequestAuthorizeConnection(ctx, workerId, connCancel)
+	fmt.Fprintf(os.Stderr, "[DEBUG-REQ] acResp=%v err=%v\n", acResp != nil, err)
+	if err != nil {
 			event.WriteError(ctx, op, err, event.WithInfoMsg("unable to authorize connection"))
 			if err = conn.Close(websocket.StatusInternalError, "unable to authorize connection"); err != nil {
 				event.WriteError(ctx, op, err, event.WithInfoMsg("error closing client connection"))
@@ -282,8 +292,11 @@ func (w *Worker) handleProxy(listenerCfg *listenerutil.ListenerConfig, sessionMa
 			return
 		}
 
-		// Verify the protocol has a supported proxy before calling RequestAuthorizeConnection
-		handleProxyFn, err := proxyHandlers.GetHandler(workerId, acResp.GetProtocolContext())
+	// Verify the protocol has a supported proxy before calling RequestAuthorizeConnection
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANDLER] about to call GetHandler\n")
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANDLER] before GetHandler, protocolCtx=%v\n", acResp.GetProtocolContext())
+	handleProxyFn, err := proxyHandlers.GetHandler(workerId, acResp.GetProtocolContext())
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANDLER] GetHandler returned fn=%T err=%v\n", handleProxyFn, err)
 		if err != nil {
 			conn.Close(proxyHandlers.WebsocketStatusProtocolSetupError, "unable to get proxy handler")
 			event.WriteError(ctx, op, err)

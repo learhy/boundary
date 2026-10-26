@@ -310,6 +310,19 @@ func TestAuthorizeConnection(t *testing.T) {
 	})
 	connectionRouteFn = singleHopConnectionRoute
 
+	// Save/restore the getProtocolContext hook so we don't leak the
+	// sshProtocolContext assignment into other tests.
+	currentPcFn := getProtocolContext
+	t.Cleanup(func() {
+		getProtocolContext = currentPcFn
+	})
+	getProtocolContext = sshProtocolContext
+
+	// Build the expected protocol context that the test will see on
+	// every authorized connection on the feature/ssh-session-recording branch.
+	wantSshPc, err := sshProtocolContext(ctx, nil, nil, nil, nil, nil, "", nil)
+	require.NoError(t, err)
+
 	org, prj := iam.TestScopes(t, iam.TestRepo(t, conn, wrapper))
 
 	serversRepoFn := func() (*server.Repository, error) {
@@ -377,16 +390,17 @@ func TestAuthorizeConnection(t *testing.T) {
 				_, _, err = repo.ActivateSession(ctx, sess.GetPublicId(), sess.Version, []byte(tofuToken))
 				require.NoError(t, err)
 
-				return sess.GetPublicId()
-			}(),
-			want: &pbs.AuthorizeConnectionResponse{
-				Status:          pbs.CONNECTIONSTATUS_CONNECTIONSTATUS_AUTHORIZED,
-				ConnectionsLeft: -1,
-				Route:           []string{worker.PublicId},
-			},
+			return sess.GetPublicId()
+		}(),
+		want: &pbs.AuthorizeConnectionResponse{
+			Status:          pbs.CONNECTIONSTATUS_CONNECTIONSTATUS_AUTHORIZED,
+			ConnectionsLeft: -1,
+			Route:           []string{worker.PublicId},
+			ProtocolContext: wantSshPc,
 		},
-		{
-			name: "with-credentials",
+	},
+	{
+		name: "with-credentials",
 			sessionId: func() string {
 				sess := newTestSession(-1)
 
@@ -411,6 +425,7 @@ func TestAuthorizeConnection(t *testing.T) {
 				Status:          pbs.CONNECTIONSTATUS_CONNECTIONSTATUS_AUTHORIZED,
 				ConnectionsLeft: -1,
 				Route:           []string{worker.PublicId},
+				ProtocolContext: wantSshPc,
 			},
 		},
 		{

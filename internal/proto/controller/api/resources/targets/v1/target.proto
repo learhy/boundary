@@ -280,23 +280,23 @@ message SshTargetAttributes {
   ]; // @gotags: `class:"public"`
 
   // PublicId of the storage bucket associated with the target
+  //
+  // OSS: this field is round-tripped only via the proto (not persisted
+  // to the target_tcp table). The mask_mapping is intentionally omitted
+  // because the OSS storage target has no corresponding destination
+  // field; the value is still readable in the API response.
   google.protobuf.StringValue storage_bucket_id = 30 [
     json_name = "storage_bucket_id",
-    (custom_options.v1.generate_sdk_option) = true,
-    (custom_options.v1.mask_mapping) = {
-      this: "attributes.storage_bucket_id"
-      that: "StorageBucketId"
-    }
+    (custom_options.v1.generate_sdk_option) = true
   ]; // @gotags: `class:"public"`
 
   // A boolean indicating if session recording has been enabled
+  //
+  // OSS: same as storage_bucket_id — proto round-trip only, not
+  // persisted. The worker decides recording from its own config.
   google.protobuf.BoolValue enable_session_recording = 40 [
     json_name = "enable_session_recording",
-    (custom_options.v1.generate_sdk_option) = true,
-    (custom_options.v1.mask_mapping) = {
-      this: "attributes.enable_session_recording"
-      that: "EnableSessionRecording"
-    }
+    (custom_options.v1.generate_sdk_option) = true
   ]; // @gotags: `class:"public"`
 }
 

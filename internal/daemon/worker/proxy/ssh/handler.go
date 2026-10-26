@@ -6,8 +6,10 @@ package ssh
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -30,6 +32,8 @@ func handleProxy(
 	rm proxy.RecordingManager,
 ) (proxy.ProxyConnFn, error) {
 	const op = "ssh.handleProxy"
+	fmt.Fprintf(os.Stderr, "[SSH-HANDLER] handleProxy called connId=%s rm=%T nil=%v\n", connId, rm, rm == nil)
+	os.Stderr.Sync()
 
 	switch {
 	case clientConn == nil:

@@ -17,6 +17,7 @@ import (
 	intglobals "github.com/hashicorp/boundary/internal/globals"
 	"github.com/hashicorp/boundary/internal/kms"
 	"github.com/hashicorp/boundary/internal/observability/event"
+	"github.com/hashicorp/boundary/internal/proxy"
 	"github.com/hashicorp/boundary/internal/server"
 	"github.com/hashicorp/boundary/internal/session"
 	"github.com/hashicorp/boundary/internal/types/scope"
@@ -54,11 +55,13 @@ var (
 	connectionRouteFn = singleHopConnectionRoute
 
 	// getProtocolContext populates the protocol specific context fields
-	// depending on the protocol used to for the boundary connection. Defaults
-	// to noProtocolContext since tcp connections are the only protocol schemes
-	// available in OSS and are a straight forward proxy with no additional
-	// fields needed.
-	getProtocolContext = noProtocolContext
+	// depending on the protocol used to for the boundary connection. On the
+	// feature/ssh-session-recording branch we always emit an SSH protocol
+	// context (the only target subtype available in OSS is TCP, and the SSH
+	// proxy handler is what produces BSR session recordings). The dispatcher
+	// on the worker uses the protocol context's type URL to route the
+	// connection through the SSH handler.
+	getProtocolContext = sshProtocolContext
 )
 
 // singleHopConnectionRoute returns a route consisting of the singlehop worker (the root worker id)
@@ -393,6 +396,39 @@ func noProtocolContext(
 	intglobals.ControllerExtension,
 ) (*anypb.Any, error) {
 	return nil, nil
+}
+
+// sshProtocolContext returns an SshProtocolContext wrapped in an Any, which
+// the worker uses to route the connection through the SSH proxy handler. This
+// is the protocol context that triggers BSR session recording on the
+// feature/ssh-session-recording branch.
+func sshProtocolContext(
+	_ context.Context,
+	_ *session.Repository,
+	_ *server.Repository,
+	_ common.WorkerAuthRepoStorageFactory,
+	_ *pbs.AuthorizeConnectionRequest,
+	_ []string,
+	_ string,
+	_ intglobals.ControllerExtension,
+) (*anypb.Any, error) {
+	pc := &proxy.SshProtocolContext{
+		// Default to accepting any host key in OSS — the existing TCP target
+		// schema does not carry host key material. The worker-side SSH
+		// handler can be wired to enforce known host keys in a follow-up.
+		HostKeyCheckStrategy: proxy.HostKeyCheckStrategy_HOST_KEY_CHECK_STRATEGY_INSECURE_ACCEPT_ANY,
+		// Pick the first credential from the session's credential library.
+		// This matches Boundary's default behavior for non-try-each targets.
+		CredentialStrategy: proxy.CredentialStrategy_CREDENTIAL_STRATEGY_PICK_FIRST,
+	}
+	marshaled, err := proto.Marshal(pc)
+	if err != nil {
+		return nil, err
+	}
+	return &anypb.Any{
+		TypeUrl: "worker.proxy.v1.SshProtocolContext",
+		Value:   marshaled,
+	}, nil
 }
 
 func lookupSessionWorkerFilter(ctx context.Context, sessionInfo *session.Session, authzSummary *session.AuthzSummary, ws *workerServiceServer,

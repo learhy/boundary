@@ -489,6 +489,7 @@ func (c *Command) Run(args []string) (retCode int) {
 	}()
 
 	c.listenerAddr = c.listener.Addr().(*net.TCPAddr)
+	fmt.Fprintf(os.Stderr, "[DEBUG-CLI] local listener bound to %s\n", c.listenerAddr.String())
 
 	if c.Func == "connect" {
 		// "connect" indicates there is no subcommand to the connect function.
@@ -529,6 +530,7 @@ func (c *Command) Run(args []string) (retCode int) {
 		defer c.connWg.Done()
 		for {
 			listeningConn, err := c.listener.AcceptTCP()
+			fmt.Fprintf(os.Stderr, "[DEBUG-CLI] listener.AcceptTCP err=%v\n", err)
 			if err != nil {
 				select {
 				case <-c.proxyCtx.Done():
@@ -686,6 +688,7 @@ func (c *Command) getWsConn(
 	workerAddr string,
 	transport *http.Transport,
 ) (*websocket.Conn, error) {
+	fmt.Fprintf(os.Stderr, "[DEBUG-CLI] getWsConn dialing ws://%s/v1/proxy\n", workerAddr)
 	conn, resp, err := websocket.Dial(
 		ctx,
 		fmt.Sprintf("ws://%s/v1/proxy", workerAddr),

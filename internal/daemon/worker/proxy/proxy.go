@@ -6,12 +6,29 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"os"
+	"strings"
 	"sync"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
+
+// debugLog writes to /tmp/boundary-debug.log if that env var is set or the
+// file is writable. Used for tracing the type-URL dispatcher flow.
+func debugLog(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	f, err := os.OpenFile("/tmp/boundary-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		_, _ = f.WriteString(msg)
+		_ = f.Sync()
+		_ = f.Close()
+	}
+	// Also write to stderr so it shows up in the dev log
+	fmt.Fprintf(os.Stderr, "[DEBUG] %s", msg)
+}
 
 var (
 	TcpHandlerName = "tcp"
@@ -58,18 +75,46 @@ func RegisterHandlerForTypeUrl(typeUrlSuffix, handlerKey string) {
 // to find a registered handler key; if found, it returns that handler. If no
 // match is found, it falls back to the TCP handler for backwards compatibility
 // with pre-session-recording deployments.
-func typeUrlDispatcher(_ string, protocolCtx proto.Message) (Handler, error) {
+func typeUrlDispatcher(workerId string, protocolCtx proto.Message) (Handler, error) {
+	debugLog(">>> typeUrlDispatcher called workerId=%s protocolCtx=%T\n", workerId, protocolCtx)
 	if protocolCtx == nil {
+		debugLog(">>> protocolCtx is nil, falling back to TCP\n")
 		// No protocol context: fall back to TCP (legacy behaviour)
 		return getTcpHandler()
 	}
 
+	// Unwrap google.protobuf.Any to access the inner message's descriptor.
+	// The controller sends protocol contexts wrapped in Any, so the raw
+	// proto.Message we receive is *anypb.Any whose descriptor is the Any
+	// type itself, not the inner message type. We need to extract the
+	// type URL suffix (the part after the last slash) and look it up.
+	if anyMsg, ok := protocolCtx.(*anypb.Any); ok {
+		typeUrl := anyMsg.GetTypeUrl()
+		debugLog("typeUrlDispatcher got Any with typeUrl=%q, value-len=%d\n", typeUrl, len(anyMsg.GetValue()))
+		// Strip the "type.googleapis.com/" prefix to get the inner type name
+		if i := strings.LastIndex(typeUrl, "/"); i >= 0 {
+			typeUrl = typeUrl[i+1:]
+		}
+		debugLog("stripped typeUrl=%q, map=%v\n", typeUrl, typeUrlToHandler)
+		if key, ok := typeUrlToHandler[typeUrl]; ok {
+			handler, ok := handlers.Load(key)
+			if !ok {
+				return nil, ErrUnknownProtocol
+			}
+			return handler.(Handler), nil
+		}
+		// Inner type not recognized: fall through to TCP
+		return getTcpHandler()
+	}
+
+	// Bare proto.Message path (not wrapped in Any): inspect the descriptor
+	// directly. This is the case for tests that construct the inner type
+	// directly.
 	typeUrl := protocolCtx.ProtoReflect().Descriptor().FullName()
 	key, ok := typeUrlToHandler[string(typeUrl)]
 	if ok {
 		handler, ok := handlers.Load(key)
 		if !ok {
-			// Handler key registered but handler not yet loaded (init order)
 			return nil, ErrUnknownProtocol
 		}
 		return handler.(Handler), nil
@@ -86,6 +131,14 @@ func getTcpHandler() (Handler, error) {
 		return nil, ErrUnknownProtocol
 	}
 	return handler.(Handler), nil
+}
+
+// tcpOnly is a GetHandler implementation that always returns the registered
+// TCP handler, ignoring any protocol context. It is used by tests to verify
+// the TCP-fallback path of the dispatcher in isolation.
+func tcpOnly(_ string, _ proto.Message) (Handler, error) {
+	debugLog("!!! tcpOnly called (this means dispatcher fell through)\n")
+	return getTcpHandler()
 }
 
 // RecordingManager allows a handler for a protocol that supports recording.
